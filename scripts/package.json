@@ -1,0 +1,14 @@
+{
+  "name": "parallel-arena-scripts",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "agents": "node agents.js",
+    "resolve": "node autoResolve.js",
+    "fund": "node fundAgents.js"
+  },
+  "dependencies": {
+    "viem": "^2.9.0",
+    "dotenv": "^16.0.0"
+  }
+}
