@@ -3,7 +3,7 @@ import { parseAbi } from 'viem'
 export const ABI = parseAbi([
   'struct Player { address addr; uint256 health; uint256 attack; uint256 defense; uint8 status; uint256 roundsPlayed; uint256 kills; uint256 rank; }',
   'struct RoundResult { uint256 round; uint256 actionsProcessed; uint256 attacksLanded; uint256 healsApplied; uint256 defendersProtected; uint256 playersEliminated; uint256 resolvedAt; }',
-  'function joinArena() external',
+  'function joinArena() external payable',
   'function submitAction(uint8 action) external',
   'function resolveRound() external',
   'function getGameState() external view returns (uint256 round, uint256 deadline, uint256 activePlayers, uint256 totalPlayers, bool resolved)',

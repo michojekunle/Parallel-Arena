@@ -55,7 +55,7 @@ export function PlayerAvatar({ player, currentAction, isMe, isUnderAttack }: Pla
   const [showEffect, setShowEffect] = useState<'attack' | 'defend' | 'heal' | null>(null)
 
   useEffect(() => {
-    if (!currentAction || currentAction === Action.NONE) { setShowEffect(null); return }
+    if (currentAction === undefined || currentAction === Action.NONE) { setShowEffect(null); return }
     if (currentAction === Action.ATTACK) setShowEffect('attack')
     else if (currentAction === Action.DEFEND) setShowEffect('defend')
     else if (currentAction === Action.HEAL) setShowEffect('heal')

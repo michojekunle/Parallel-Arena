@@ -1,13 +1,13 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { createPublicClient, http, parseGwei } from 'viem'
+import { createPublicClient, http, parseGwei, parseEther } from 'viem'
 import { useWalletClient, useAccount } from 'wagmi'
 import { ABI, CONTRACT_ADDRESS } from '@/lib/contract'
 import { monadTestnet, POLL_INTERVAL, SHORT_ADDR, ACTION_LABELS } from '@/lib/constants'
 import {
   Action, Player, GameState, RoundResult, LogEntry, PendingAction,
-  PlayerStatus, JoinStep,
+  PlayerStatus, JoinStep, GamePhase, FullGameState, PrizeAmounts,
 } from '@/lib/types'
 import { useSessionKey } from './useSessionKey'
 
@@ -26,6 +26,7 @@ export function useArena() {
   const sessionKey = useSessionKey()
 
   const [gameState, setGameState] = useState<GameState | null>(null)
+  const [fullGameState, setFullGameState] = useState<FullGameState | null>(null)
   const [players, setPlayers] = useState<Player[]>([])
   const [myAction, setMyAction] = useState<Action>(Action.NONE)
   const [pendingActions, setPendingActions] = useState<PendingAction[]>([])
@@ -37,6 +38,10 @@ export function useArena() {
   const [joinStep, setJoinStep] = useState<JoinStep>('idle')
   const [roundStartMs, setRoundStartMs] = useState<number | null>(null)
   const [lastRoundMs, setLastRoundMs] = useState<number | null>(null)
+
+  // Prize pool state
+  const [prizeAmounts, setPrizeAmounts] = useState<PrizeAmounts | null>(null)
+  const [hasClaimed, setHasClaimed] = useState(false)
 
   const lastRoundRef = useRef<bigint>(-1n)
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -55,18 +60,40 @@ export function useArena() {
     if (!CONTRACT_ADDRESS || CONTRACT_ADDRESS === '0x0000000000000000000000000000000000000000') return
 
     try {
-      const [gs, allPlayers, remaining] = await Promise.all([
-        publicClient.readContract({ address: CONTRACT_ADDRESS, abi: ABI, functionName: 'getGameState' }),
+      const [fgs, allPlayers, remaining] = await Promise.all([
+        publicClient.readContract({ address: CONTRACT_ADDRESS, abi: ABI, functionName: 'getFullGameState' }),
         publicClient.readContract({ address: CONTRACT_ADDRESS, abi: ABI, functionName: 'getAllPlayers' }),
         publicClient.readContract({ address: CONTRACT_ADDRESS, abi: ABI, functionName: 'getTimeRemaining' }),
       ])
 
-      const [round, deadline, activePlayers, totalPlayers, resolved] = gs as [bigint, bigint, bigint, bigint, boolean]
+      const [round, deadline, activePlayers, totalPlayers, resolved, pool, maxRounds, gamePhaseRaw, topWinners] =
+        fgs as [bigint, bigint, bigint, bigint, boolean, bigint, bigint, number, [`0x${string}`, `0x${string}`, `0x${string}`]]
+
+      const gamePhase = gamePhaseRaw as GamePhase
       const typedPlayers = allPlayers as Player[]
 
-      setGameState({ round, deadline, activePlayers, totalPlayers, resolved })
+      const gs: GameState = { round, deadline, activePlayers, totalPlayers, resolved }
+      const fgsTyped: FullGameState = {
+        round, deadline, activePlayers, totalPlayers, resolved,
+        pool, maxRounds, gamePhase, winners: topWinners,
+      }
+
+      setGameState(gs)
+      setFullGameState(fgsTyped)
       setPlayers(typedPlayers)
       setTimeRemaining(Number(remaining))
+
+      // Fetch prize amounts when pool is non-zero
+      if (pool > 0n) {
+        try {
+          const pa = await publicClient.readContract({
+            address: CONTRACT_ADDRESS, abi: ABI, functionName: 'getPrizeAmounts',
+          }) as [bigint, bigint, bigint]
+          setPrizeAmounts({ firstPrize: pa[0], secondPrize: pa[1], thirdPrize: pa[2] })
+        } catch {
+          // non-fatal
+        }
+      }
 
       // Detect new round transition
       if (round !== lastRoundRef.current && lastRoundRef.current !== -1n) {
@@ -204,9 +231,28 @@ export function useArena() {
       },
     })
 
-    unwatchRef.current = () => { unwatch1(); unwatch2(); unwatch3(); unwatch4(); unwatch5() }
+    const unwatch6 = publicClient.watchContractEvent({
+      address: CONTRACT_ADDRESS,
+      abi: ABI,
+      eventName: 'GameEnded',
+      pollingInterval: POLL_INTERVAL,
+      onLogs: (logs) => {
+        logs.forEach((log: unknown) => {
+          const typedLog = log as { args: { winners: [`0x${string}`, `0x${string}`, `0x${string}`]; prizePool: bigint } }
+          const { prizePool } = typedLog.args
+          addLog({
+            round: Number(lastRoundRef.current),
+            message: `GAME ENDED — Prize pool: ${Number(prizePool) / 1e18} MON`,
+            type: 'system',
+          })
+          fetchState()
+        })
+      },
+    })
+
+    unwatchRef.current = () => { unwatch1(); unwatch2(); unwatch3(); unwatch4(); unwatch5(); unwatch6() }
     return () => { if (unwatchRef.current) unwatchRef.current() }
-  }, [addLog])
+  }, [addLog, fetchState])
 
   // Polling
   useEffect(() => {
@@ -234,6 +280,7 @@ export function useArena() {
         address: CONTRACT_ADDRESS,
         abi: ABI,
         functionName: 'joinArena',
+        value: parseEther('0.01'),
         gasPrice: parseGwei('50'),
       })
       showToast('Joining arena...', 'success')
@@ -257,6 +304,7 @@ export function useArena() {
         address: CONTRACT_ADDRESS,
         abi: ABI,
         functionName: 'joinArena',
+        value: parseEther('0.01'),
         gasPrice: parseGwei('50'),
       })
       await publicClient.waitForTransactionReceipt({ hash: joinHash })
@@ -344,12 +392,53 @@ export function useArena() {
     }
   }, [walletClient, showToast, fetchState])
 
+  const claimPrize = useCallback(async (): Promise<void> => {
+    if (!walletClient) { showToast('Connect wallet first', 'error'); return }
+    try {
+      const hash = await walletClient.writeContract({
+        address: CONTRACT_ADDRESS,
+        abi: ABI,
+        functionName: 'claimPrize',
+        gasPrice: parseGwei('50'),
+      })
+      showToast('Claiming prize...', 'success')
+      await publicClient.waitForTransactionReceipt({ hash })
+      setHasClaimed(true)
+      showToast('💰 Prize claimed!', 'success')
+      addLog({ round: Number(gameState?.round ?? 0), message: '💰 Prize claimed!', type: 'system' })
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Unknown error'
+      showToast(`Claim failed: ${msg.slice(0, 60)}`, 'error')
+    }
+  }, [walletClient, gameState, addLog, showToast])
+
+  const resetGame = useCallback(async (): Promise<void> => {
+    if (!walletClient) { showToast('Connect wallet first', 'error'); return }
+    try {
+      const hash = await walletClient.writeContract({
+        address: CONTRACT_ADDRESS,
+        abi: ABI,
+        functionName: 'resetGame',
+        gasPrice: parseGwei('50'),
+      })
+      showToast('Resetting game...', 'success')
+      await publicClient.waitForTransactionReceipt({ hash })
+      setHasClaimed(false)
+      addLog({ round: 0, message: 'Game reset — new session started', type: 'system' })
+      await fetchState()
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Unknown error'
+      showToast(`Reset failed: ${msg.slice(0, 60)}`, 'error')
+    }
+  }, [walletClient, addLog, showToast, fetchState])
+
   const myPlayer = players.find(p => p.addr.toLowerCase() === address?.toLowerCase()) ?? null
   const isInArena = myPlayer?.status === PlayerStatus.ACTIVE
   const hasActed = myAction !== Action.NONE
 
   return {
     gameState,
+    fullGameState,
     players,
     myPlayer,
     myAction,
@@ -364,9 +453,13 @@ export function useArena() {
     joinStep,
     lastRoundMs,
     sessionKey,
+    prizeAmounts,
+    hasClaimed,
     joinArena,
     joinAndAuthorize,
     submitAction,
     resolveRound,
+    claimPrize,
+    resetGame,
   }
 }
