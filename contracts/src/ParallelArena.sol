@@ -124,7 +124,7 @@ contract ParallelArena {
 
     function joinArena() external payable {
         require(phase != GamePhase.ENDED, "Game ended - wait for reset");
-        require(msg.value == ENTRY_FEE, "Entry fee required: 0.01 MON");
+        require(msg.value == ENTRY_FEE, "Wrong entry fee");
         require(playerList.length < MAX_PLAYERS, "Arena full");
         require(players[msg.sender].status != PlayerStatus.ACTIVE, "Already in arena");
 
@@ -316,11 +316,11 @@ contract ParallelArena {
         currentRound++;
         roundDeadline = block.timestamp + ROUND_DURATION;
 
-        // End game when MAX_ROUNDS completed OR ≤3 players remain
+        // End game when MAX_ROUNDS completed OR only 1 player remains
         bool maxRoundsReached = currentRound >= MAX_ROUNDS;
-        bool fewPlayersLeft   = activePlayerCount <= 3;
+        bool lastManStanding  = activePlayerCount <= 1;
 
-        if (maxRoundsReached || fewPlayersLeft || activePlayerCount == 0) {
+        if (maxRoundsReached || lastManStanding) {
             _endGame();
         }
     }

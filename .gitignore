@@ -46,3 +46,7 @@ logs/
 
 # Project specific
 skills-lock.json
+
+.npm-cache/
+.agents/
+.claude/
