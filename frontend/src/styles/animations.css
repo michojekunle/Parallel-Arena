@@ -1,0 +1,66 @@
+/* Additional animations for Parallel Arena */
+
+@keyframes glitch {
+  0%   { clip-path: inset(40% 0 61% 0); transform: skew(0.5deg); }
+  20%  { clip-path: inset(92% 0 1% 0);  transform: skew(0.1deg); }
+  40%  { clip-path: inset(43% 0 1% 0);  transform: skew(-0.4deg); }
+  60%  { clip-path: inset(25% 0 58% 0); transform: skew(0.6deg); }
+  80%  { clip-path: inset(54% 0 7% 0);  transform: skew(-0.2deg); }
+  100% { clip-path: inset(58% 0 43% 0); transform: skew(0.3deg); }
+}
+
+.glitch-text {
+  position: relative;
+}
+.glitch-text::before,
+.glitch-text::after {
+  content: attr(data-text);
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+}
+.glitch-text::before {
+  color: var(--accent-cyan);
+  animation: glitch 0.5s infinite;
+  left: 2px;
+  text-shadow: -2px 0 var(--accent-red);
+}
+.glitch-text::after {
+  color: var(--accent-red);
+  animation: glitch 0.5s infinite reverse;
+  left: -2px;
+  text-shadow: 2px 0 var(--accent-cyan);
+}
+
+@keyframes number-tick {
+  from { transform: translateY(-100%); opacity: 0; }
+  to   { transform: translateY(0);     opacity: 1; }
+}
+.number-tick { animation: number-tick 0.3s ease-out; }
+
+@keyframes scan-line {
+  0%   { transform: translateY(-100%); }
+  100% { transform: translateY(100vh); }
+}
+.scan-line {
+  position: fixed;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(0,255,229,0.5), transparent);
+  animation: scan-line 4s linear infinite;
+  pointer-events: none;
+  z-index: 10000;
+}
+
+@keyframes data-stream {
+  0%   { opacity: 0; transform: translateY(-10px); }
+  10%  { opacity: 1; transform: translateY(0); }
+  90%  { opacity: 1; }
+  100% { opacity: 0; transform: translateY(10px); }
+}
+.data-stream {
+  animation: data-stream 2s ease-in-out infinite;
+}

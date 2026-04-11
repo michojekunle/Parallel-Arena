@@ -1,0 +1,109 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-primary: #000000;
+  --bg-secondary: #111111;
+  --bg-card: #000000;
+  --accent-primary: #FFFFFF;
+  --accent-secondary: #888888;
+  --accent-blue: #0070F3;
+  --accent-red: #EE0000;
+  --accent-green: #0070F3; /* Vercel uses blue for success sometimes, or clean green #00DFD8 */
+  --border-subtle: #333333;
+  --text-primary: #FFFFFF;
+  --text-muted: #888888;
+}
+
+body {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Vercel-style card */
+.glass {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 0px;
+  transition: border-color 0.2s ease;
+}
+.glass:hover {
+  border-color: #555555;
+}
+
+.action-btn {
+  background: #FFFFFF;
+  color: #000000;
+  padding: 10px 20px;
+  font-weight: 500;
+  border-radius: 4px;
+  transition: all 0.15s ease;
+  border: 1px solid #FFFFFF;
+}
+.action-btn:hover {
+  background: #000000;
+  color: #FFFFFF;
+}
+.action-btn:active { transform: scale(0.98); }
+.action-btn:disabled { 
+  background: #111111; 
+  color: #444444; 
+  border-color: #333333; 
+  cursor: not-allowed; 
+}
+
+.action-btn-outline {
+  background: transparent;
+  color: #FFFFFF;
+  border: 1px solid #333333;
+}
+.action-btn-outline:hover {
+  border-color: #FFFFFF;
+}
+
+@keyframes flash-white {
+  0%   { background: rgba(255, 255, 255, 0); }
+  10%  { background: rgba(255, 255, 255, 0.1); }
+  100% { background: rgba(255, 255, 255, 0); }
+}
+.resolution-flash { animation: flash-white 1s ease-out; }
+
+.player-card {
+  background: #000000;
+  border: 1px solid #333333;
+  border-radius: 0px;
+}
+.player-card.active { border-color: #FFFFFF; }
+.player-card.dead   { opacity: 0.3; grayscale: 1; }
+.player-card.acted  { border-color: #0070F3; }
+
+.health-segment {
+  height: 2px;
+  background: #FFFFFF;
+  transition: width 0.5s ease;
+}
+.health-segment.low { background: #EE0000; }
+
+@keyframes scanline {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100%); }
+}
+/* Subdued activity line */
+.activity-indicator {
+  position: relative;
+  overflow: hidden;
+}
+.activity-indicator::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, #FFFFFF, transparent);
+  animation: scanline 2s linear infinite;
+  opacity: 0.1;
+}
