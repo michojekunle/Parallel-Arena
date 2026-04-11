@@ -281,7 +281,7 @@ export function useArena() {
         abi: ABI,
         functionName: 'joinArena',
         value: parseEther('0.01'),
-        gasPrice: parseGwei('50'),
+        gasPrice: parseGwei('250'),
       })
       showToast('Joining arena...', 'success')
       addLog({ round: Number(gameState?.round ?? 0), message: 'You joined the arena', type: 'join' })
@@ -305,7 +305,7 @@ export function useArena() {
         abi: ABI,
         functionName: 'joinArena',
         value: parseEther('0.01'),
-        gasPrice: parseGwei('50'),
+        gasPrice: parseGwei('250'),
       })
       await publicClient.waitForTransactionReceipt({ hash: joinHash })
       addLog({ round: Number(gameState?.round ?? 0), message: 'You joined the arena', type: 'join' })
@@ -319,9 +319,17 @@ export function useArena() {
       addLog({ round: Number(gameState?.round ?? 0), message: '⚡ Session key active — auto-signing enabled', type: 'system' })
       await fetchState()
     } catch (e: unknown) {
+      // Fetch latest state before resetting joinStep — if the join tx confirmed,
+      // isInArena will become true and showJoinButton stays false regardless.
+      await fetchState().catch(() => null)
       setJoinStep('idle')
       const msg = e instanceof Error ? e.message : 'Unknown error'
-      showToast(msg.includes('Already in arena') ? 'Already in arena' : `Join failed: ${msg.slice(0, 60)}`, 'error')
+      showToast(
+        msg.includes('Already in arena') ? 'Already in arena'
+          : msg.includes('User rejected') ? 'Transaction cancelled'
+          : `Join failed: ${msg.slice(0, 60)}`,
+        'error'
+      )
     }
   }, [walletClient, address, gameState, sessionKey, addLog, showToast, fetchState])
 
@@ -350,11 +358,15 @@ export function useArena() {
           abi: ABI,
           functionName: 'submitAction',
           args: [action],
-          gasPrice: parseGwei('50'),
+          gasPrice: parseGwei('250'),
         })
         addLog({ round, message: `You submitted ${label}`, type: 'action', txHash: hash })
         showToast(`${label} submitted!`, 'success')
       }
+
+      // Wait for confirmation to ensure state sync
+      await publicClient.waitForTransactionReceipt({ hash })
+      await fetchState()
 
       // Attach tx hash to the pending action entry
       setPendingActions(prev =>
@@ -372,7 +384,7 @@ export function useArena() {
         'error'
       )
     }
-  }, [walletClient, address, gameState, sessionKey, addLog, showToast])
+  }, [walletClient, address, gameState, sessionKey, addLog, showToast, fetchState])
 
   const resolveRound = useCallback(async (): Promise<void> => {
     if (!walletClient) { showToast('Connect wallet first', 'error'); return }
@@ -381,7 +393,7 @@ export function useArena() {
         address: CONTRACT_ADDRESS,
         abi: ABI,
         functionName: 'resolveRound',
-        gasPrice: parseGwei('50'),
+        gasPrice: parseGwei('250'),
       })
       showToast('Resolving round...', 'success')
       await publicClient.waitForTransactionReceipt({ hash })
@@ -399,7 +411,7 @@ export function useArena() {
         address: CONTRACT_ADDRESS,
         abi: ABI,
         functionName: 'claimPrize',
-        gasPrice: parseGwei('50'),
+        gasPrice: parseGwei('250'),
       })
       showToast('Claiming prize...', 'success')
       await publicClient.waitForTransactionReceipt({ hash })
@@ -419,7 +431,7 @@ export function useArena() {
         address: CONTRACT_ADDRESS,
         abi: ABI,
         functionName: 'resetGame',
-        gasPrice: parseGwei('50'),
+        gasPrice: parseGwei('250'),
       })
       showToast('Resetting game...', 'success')
       await publicClient.waitForTransactionReceipt({ hash })
@@ -432,9 +444,15 @@ export function useArena() {
     }
   }, [walletClient, addLog, showToast, fetchState])
 
-  const myPlayer = players.find(p => p.addr.toLowerCase() === address?.toLowerCase()) ?? null
-  const isInArena = myPlayer?.status === PlayerStatus.ACTIVE
+  const normalizedAddress = address?.toLowerCase()
+  const myPlayer = players.find(p => p.addr?.toLowerCase() === normalizedAddress) ?? null
+  const isInArena = !!myPlayer && Number(myPlayer.status) === PlayerStatus.ACTIVE
   const hasActed = myAction !== Action.NONE
+
+  // Show the join button only when: not in arena AND not currently in any join flow.
+  // Any active joinStep (joining/authorizing/funding/done) hides the button — this
+  // prevents it from flashing back during RPC lag after the join tx confirms.
+  const showJoinButton = !isInArena && joinStep === 'idle'
 
   return {
     gameState,
@@ -451,6 +469,7 @@ export function useArena() {
     isFlashing,
     toast,
     joinStep,
+    showJoinButton,
     lastRoundMs,
     sessionKey,
     prizeAmounts,

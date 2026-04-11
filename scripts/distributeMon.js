@@ -59,7 +59,7 @@ async function main() {
 
   const numAgents = parseInt(process.env.NUM_AGENTS || '10');
   
-  let amountStr = '2.0';
+  let amountStr = '0.5';
   if (humanBalance < 20.0) {
     amountStr = '0.5'; // Give them the bare minimum to afford high gas fees
   }

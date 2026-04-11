@@ -1,9 +1,11 @@
 'use client'
 
-import { Action, JoinStep, SessionKeyState } from '@/lib/types'
+import { Action, JoinStep, SessionKeyState, Player, PlayerStatus } from '@/lib/types'
 
 interface ActionPanelProps {
+  myPlayer: Player | null
   isInArena: boolean
+  showJoinButton: boolean
   hasActed: boolean
   myAction: Action
   roundResolved: boolean
@@ -38,7 +40,9 @@ const JOIN_STEPS: Record<JoinStep, string> = {
 }
 
 export function ActionPanel({
+  myPlayer,
   isInArena,
+  showJoinButton,
   hasActed,
   myAction,
   roundResolved,
@@ -50,12 +54,44 @@ export function ActionPanel({
   onResolve,
   onAuthorizeSession,
 }: ActionPanelProps): React.ReactElement {
+  const isDead = myPlayer?.status === PlayerStatus.DEAD
   const canAct = isInArena && !hasActed && !roundResolved
   const canResolve = timeRemaining === 0 && !roundResolved
   const isJoining = joinStep !== 'idle' && joinStep !== 'done'
 
+  const getButtonStyle = (action: Action, color: string) => {
+    const isSelected = myAction === action
+    if (!canAct && !isSelected) {
+      return {
+        borderColor: '#1a1a1a',
+        color: '#333',
+        background: 'transparent',
+      }
+    }
+    return {
+      borderColor: isSelected ? 'white' : color,
+      color: isSelected ? 'black' : color,
+      background: isSelected ? 'white' : 'transparent',
+    }
+  }
+
   return (
     <div className="border-b border-[#1a1a1a] bg-black">
+      {/* Eliminated Overlay */}
+      {isDead && (
+        <div className="px-4 py-2 bg-[#EE0000]/10 border-b border-[#EE0000]/20 flex items-center justify-between">
+          <span className="text-[10px] font-bold text-[#EE0000] uppercase tracking-widest">
+            ✕ NODE_TERMINATED: You were eliminated
+          </span>
+          <button
+            className="text-[10px] font-bold text-white border border-white/40 px-3 py-1 hover:bg-white hover:text-black transition-all"
+            onClick={onJoinAndAuthorize}
+          >
+            RE-INITIALIZE (0.01 MON)
+          </button>
+        </div>
+      )}
+
       {/* Session key status bar */}
       {isInArena && (
         <div className={`px-4 py-2 flex items-center justify-between text-[10px] font-mono border-b ${
@@ -109,7 +145,7 @@ export function ActionPanel({
         </div>
 
         <div className="flex gap-2 sm:gap-3 flex-wrap">
-          {!isInArena ? (
+          {showJoinButton ? (
             <button
               className="flex-1 min-w-[140px] py-3 px-4 text-[11px] font-bold uppercase tracking-[0.15em] border-2 border-white text-white hover:bg-white hover:text-black transition-all disabled:opacity-40 disabled:cursor-not-allowed"
               onClick={onJoinAndAuthorize}
@@ -122,12 +158,8 @@ export function ActionPanel({
               {ACTION_CONFIG.map(({ action, label, color }) => (
                 <button
                   key={action}
-                  className="flex-1 min-w-[80px] py-3 px-2 sm:px-4 text-[10px] sm:text-[11px] font-bold uppercase tracking-[0.1em] border-2 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-                  style={{
-                    borderColor: color,
-                    color: myAction === action ? 'black' : color,
-                    background: myAction === action ? color : 'transparent',
-                  }}
+                  className="flex-1 min-w-[80px] py-3 px-2 sm:px-4 text-[10px] sm:text-[11px] font-bold uppercase tracking-[0.1em] border-2 transition-all disabled:cursor-not-allowed"
+                  style={getButtonStyle(action, color)}
                   onClick={() => onAction(action)}
                   disabled={!canAct}
                 >

@@ -23,12 +23,18 @@ if (!CONTRACT_ADDRESS) {
 const ACTIONS = [1, 1, 1, 2, 3] // weighted toward attack
 const ACTION_NAMES = { 1: 'ATTACK', 2: 'DEFEND', 3: 'HEAL' }
 
+const ENTRY_FEE = 10_000_000_000_000_000n // 0.01 MON in wei
+
+// GamePhase enum values from contract
+const GamePhase = { WAITING: 0, ACTIVE: 1, ENDED: 2 }
+
 const ABI = parseAbi([
-  'function joinArena() external',
+  'function joinArena() external payable',
   'function submitAction(uint8 action) external',
   'function resolveRound() external',
-  'function getGameState() external view returns (uint256 round, uint256 deadline, uint256 activePlayers, uint256 totalPlayers, bool resolved)',
-  'function getMyAction(uint256 round) external view returns (uint8)',
+  'function resetGame() external',
+  'function getFullGameState() external view returns (uint256 round, uint256 deadline, uint256 activePlayers, uint256 totalPlayers, bool resolved, uint256 pool, uint256 maxRounds, uint8 gamePhase, address[3] topWinners)',
+  'function getPlayer(address addr) external view returns (address addr, uint256 health, uint256 attack, uint256 defense, uint8 status, uint256 roundsPlayed, uint256 kills, uint256 rank)',
 ])
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
@@ -52,27 +58,66 @@ class Agent {
     })
     this.address = this.account.address
     this.joined = false
+    this.dead = false
+  }
+
+  // Check on-chain if this agent is still an active player
+  async syncStatus() {
+    try {
+      const player = await this.publicClient.readContract({
+        address: CONTRACT_ADDRESS,
+        abi: ABI,
+        functionName: 'getPlayer',
+        args: [this.address],
+      })
+      // status: 0=INACTIVE, 1=ACTIVE, 2=DEAD
+      const status = Number(player[4])
+      this.joined = status === 1
+      this.dead   = status === 2
+    } catch {
+      this.joined = false
+      this.dead   = false
+    }
   }
 
   async join() {
+    // Don't try to join if already confirmed active on-chain
+    await this.syncStatus()
+    if (this.joined) {
+      console.log(`[Agent ${this.id}] Already active on-chain — skipping join`)
+      return
+    }
+    if (this.dead) {
+      console.log(`[Agent ${this.id}] Was eliminated — will rejoin next game`)
+      return
+    }
+
     try {
       const hash = await this.client.writeContract({
         address: CONTRACT_ADDRESS,
         abi: ABI,
         functionName: 'joinArena',
+        value: ENTRY_FEE,
         gasPrice: parseGwei('200'),
       })
       await this.publicClient.waitForTransactionReceipt({ hash })
       this.joined = true
+      this.dead   = false
       console.log(`[Agent ${this.id}] ✅ Joined arena — ${this.address.slice(0,6)}...`)
     } catch (e) {
       if (e.message.includes('Already in arena')) {
         this.joined = true
         console.log(`[Agent ${this.id}] Already in arena`)
       } else {
-        console.error(`[Agent ${this.id}] Join failed:`, e.message)
+        console.error(`[Agent ${this.id}] Join failed:`, e.message.slice(0, 80))
       }
     }
+  }
+
+  // Reset local state when a new game starts (after resetGame())
+  reset() {
+    this.joined = false
+    this.dead   = false
   }
 
   pickAction() {
@@ -80,6 +125,8 @@ class Agent {
   }
 
   async submitAction(round) {
+    if (!this.joined || this.dead) return { success: false }
+
     const action = this.pickAction()
     // Random delay 0-500ms to create realistic parallel spread
     await sleep(Math.random() * 500)
@@ -92,13 +139,19 @@ class Agent {
         args: [action],
         gasPrice: parseGwei('200'),
       })
-      // Don't wait for receipt — fire and continue
+      // Don't wait for receipt — fire and move on (true parallel demo)
       console.log(`[Agent ${this.id}] 📤 Round ${round}: ${ACTION_NAMES[action]} — tx ${hash.slice(0,10)}...`)
       return { success: true, hash, action }
     } catch (e) {
-      if (!e.message.includes('Already acted')) {
-        console.error(`[Agent ${this.id}] submitAction failed:`, e.message)
+      if (e.message.includes('Already acted')) return { success: false }
+      if (e.message.includes('Not an active player')) {
+        // Agent was eliminated — update local state
+        this.joined = false
+        this.dead   = true
+        console.log(`[Agent ${this.id}] ☠ Eliminated`)
+        return { success: false }
       }
+      console.error(`[Agent ${this.id}] submitAction failed:`, e.message.slice(0, 80))
       return { success: false }
     }
   }
@@ -123,32 +176,35 @@ async function loadAgents() {
 
 async function joinPhase(agents) {
   console.log('\n🏟️  JOIN PHASE — Agents entering arena...')
+  // Join in parallel — this itself demonstrates Monad
   await Promise.all(agents.map(a => a.join()))
-  console.log(`✅ ${agents.filter(a => a.joined).length} agents ready\n`)
+  const ready = agents.filter(a => a.joined).length
+  console.log(`✅ ${ready}/${agents.length} agents active in arena\n`)
 }
 
 async function actionPhase(agents, round) {
-  const active = agents.filter(a => a.joined)
+  const active = agents.filter(a => a.joined && !a.dead)
+  if (active.length === 0) {
+    console.log(`[Round ${round}] No active agents to act`)
+    return
+  }
+
   console.log(`\n⚡ ROUND ${round} — PARALLEL ACTION PHASE`)
   console.log(`   Sending ${active.length} transactions SIMULTANEOUSLY...`)
   console.log('   ' + '─'.repeat(50))
 
   const t0 = Date.now()
 
-  // THIS IS THE KEY MOMENT:
-  // Promise.all fires all transactions at the same time.
-  // On Monad, these are executed in parallel.
-  // On legacy chains, they'd queue sequentially.
-  const results = await Promise.all(
-    active.map(agent => agent.submitAction(round))
-  )
+  // THE KEY MOMENT: all txs fire at the same time.
+  // On Monad these are executed in parallel — not sequential.
+  const results = await Promise.all(active.map(agent => agent.submitAction(round)))
 
   const elapsed = Date.now() - t0
   const successes = results.filter(r => r.success).length
 
   console.log('   ' + '─'.repeat(50))
   console.log(`⚡ ${successes} actions fired in ${elapsed}ms (wall time)`)
-  console.log(`   That's ${successes} parallel transactions, not sequential.`)
+  console.log(`   ${successes} parallel transactions — not sequential.`)
   console.log()
 }
 
@@ -165,15 +221,36 @@ async function resolvePhase(resolverAgent, round) {
     console.log(`✅ Round ${round} resolved in block ${receipt.blockNumber}`)
     console.log(`   All parallel actions → 1 block → done.`)
   } catch (e) {
-    console.error('Resolve failed:', e.message)
+    const skip = ['Already resolved', 'Round not ready', 'Game not active']
+    if (!skip.some(s => e.message.includes(s))) {
+      console.error('Resolve failed:', e.message.slice(0, 100))
+    }
   }
 }
 
-async function getGameState(client) {
+async function resetPhase(resolverAgent) {
+  console.log('\n🔄 GAME ENDED — Resetting for next session...')
+  try {
+    const hash = await resolverAgent.client.writeContract({
+      address: CONTRACT_ADDRESS,
+      abi: ABI,
+      functionName: 'resetGame',
+      gasPrice: parseGwei('200'),
+    })
+    await resolverAgent.publicClient.waitForTransactionReceipt({ hash })
+    console.log('✅ Game reset — new session ready')
+  } catch (e) {
+    if (!e.message.includes('Game not ended')) {
+      console.error('Reset failed:', e.message.slice(0, 100))
+    }
+  }
+}
+
+async function getFullState(client) {
   return client.readContract({
     address: CONTRACT_ADDRESS,
     abi: ABI,
-    functionName: 'getGameState',
+    functionName: 'getFullGameState',
   })
 }
 
@@ -193,32 +270,69 @@ async function main() {
     process.exit(1)
   }
 
-  await joinPhase(agents)
-
   const publicClient = createPublicClient({
     chain: monadTestnet,
     transport: http(RPC_URL),
   })
 
   let lastRound = -1
+  let lastPhase = -1
+
+  // Initial join
+  await joinPhase(agents)
 
   while (true) {
     try {
-      const [round, deadline, activePlayers,, resolved] = await getGameState(publicClient)
-      const roundNum = Number(round)
+      const state = await getFullState(publicClient)
+      const round    = Number(state[0])
+      const deadline = state[1]
+      const resolved = state[4]
+      const phase    = Number(state[7]) // 0=WAITING, 1=ACTIVE, 2=ENDED
 
-      if (roundNum !== lastRound && !resolved) {
-        lastRound = roundNum
-        await actionPhase(agents, roundNum)
+      // ── Game ended → auto-reset, then all agents re-join ──
+      if (phase === GamePhase.ENDED) {
+        if (lastPhase !== GamePhase.ENDED) {
+          console.log('\n🏆 GAME OVER — top 3 winners set on-chain')
+          lastPhase = GamePhase.ENDED
+          await sleep(3000) // brief pause before auto-reset
+          await resetPhase(agents[0])
+          // Reset local agent state so they re-join next iteration
+          agents.forEach(a => a.reset())
+          lastRound = -1
+        }
+        await sleep(3000)
+        continue
       }
 
-      // Auto-resolve check
+      // ── WAITING: game just reset — agents need to re-join ──
+      if (phase === GamePhase.WAITING) {
+        lastPhase = GamePhase.WAITING
+        const anyJoined = agents.some(a => a.joined)
+        if (!anyJoined) {
+          console.log('\n⏳ New session detected — agents joining...')
+          await joinPhase(agents)
+        }
+        await sleep(3000)
+        continue
+      }
+
+      // ── ACTIVE ──
+      lastPhase = GamePhase.ACTIVE
+
+      // New round detected — fire parallel actions
+      if (round !== lastRound && !resolved) {
+        lastRound = round
+        await actionPhase(agents, round)
+      }
+
+      // Auto-resolve when deadline passes
       const now = BigInt(Math.floor(Date.now() / 1000))
-      if (!resolved && now >= deadline) {
-        await resolvePhase(agents[0], roundNum)
+      if (!resolved && deadline > 0n && now >= deadline) {
+        await resolvePhase(agents[0], round)
       }
+
     } catch (err) {
-      console.error('Network catch:', err.message)
+      console.error('Network error:', err.message.slice(0, 100))
     }
 
     await sleep(3000)

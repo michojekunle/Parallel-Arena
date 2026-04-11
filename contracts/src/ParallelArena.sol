@@ -538,8 +538,18 @@ contract ParallelArena {
         }
         delete playerList;
         delete winners;
+
+        // CRITICAL: clear round state so round 0 is fresh in the next game.
+        // Without this, roundResolved[0] stays true and resolveRound() reverts
+        // "Already resolved" as soon as the new game starts.
+        for (uint256 i = 0; i < MAX_ROUNDS; i++) {
+            delete roundResolved[i];
+            delete roundResults[i];
+        }
+
         activePlayerCount = 0;
         currentRound = 0;
+        roundDeadline = 0;
         prizePool = 0;
         phase = GamePhase.WAITING;
         emit GameReset(0);

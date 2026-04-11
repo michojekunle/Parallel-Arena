@@ -28,6 +28,7 @@ export function Arena(): React.ReactElement {
     isFlashing,
     toast,
     joinStep,
+    showJoinButton,
     lastRoundMs,
     sessionKey,
     prizeAmounts,
@@ -227,7 +228,9 @@ export function Arena(): React.ReactElement {
       <div className="border-t border-[#1a1a1a] flex-shrink-0">
         {isConnected ? (
           <ActionPanel
+            myPlayer={myPlayer}
             isInArena={isInArena}
+            showJoinButton={showJoinButton}
             hasActed={hasActed}
             myAction={myAction}
             roundResolved={gameState?.resolved ?? false}

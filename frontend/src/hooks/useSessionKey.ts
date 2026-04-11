@@ -68,7 +68,7 @@ export function useSessionKey(): SessionKeyState {
       abi: ABI,
       functionName: 'authorizeSessionKey',
       args: [skAddr, BigInt(expiry)],
-      gasPrice: parseGwei('50'),
+      gasPrice: parseGwei('250'),
     })
     await publicClient.waitForTransactionReceipt({ hash: authHash })
 
@@ -76,7 +76,7 @@ export function useSessionKey(): SessionKeyState {
     const fundHash = await walletClient.sendTransaction({
       to: skAddr,
       value: SESSION_FUND_AMOUNT,
-      gasPrice: parseGwei('50'),
+      gasPrice: parseGwei('250'),
     })
     await publicClient.waitForTransactionReceipt({ hash: fundHash })
 
@@ -100,7 +100,7 @@ export function useSessionKey(): SessionKeyState {
       address: CONTRACT_ADDRESS,
       abi: ABI,
       functionName: 'revokeSessionKey',
-      gasPrice: parseGwei('50'),
+      gasPrice: parseGwei('250'),
     })
     await publicClient.waitForTransactionReceipt({ hash })
 
@@ -134,7 +134,7 @@ export function useSessionKey(): SessionKeyState {
       abi: ABI,
       functionName: 'submitAction',
       args: [action],
-      gasPrice: parseGwei('50'),
+      gasPrice: parseGwei('250'),
     })
 
     return hash
