@@ -120,14 +120,36 @@ class Agent {
     this.dead   = false
   }
 
-  pickAction() {
+  async pickAction() {
+    try {
+      const player = await this.publicClient.readContract({
+        address: CONTRACT_ADDRESS,
+        abi: ABI,
+        functionName: 'getPlayer',
+        args: [this.address],
+      })
+      // status: 0=INACTIVE, 1=ACTIVE, 2=DEAD
+      const hp = Number(player[1])
+
+      // DECISION ENGINE:
+      // 1. If critical (HP < 30), high chance to Heal
+      if (hp < 30) {
+        return Math.random() < 0.7 ? 3 : (Math.random() < 0.5 ? 2 : 1)
+      }
+      // 2. If healthy (HP > 90), high chance to Attack
+      if (hp > 90) {
+        return Math.random() < 0.8 ? 1 : (Math.random() < 0.5 ? 2 : 3)
+      }
+    } catch (e) {
+      // Fallback to weighted random if fetch fails
+    }
     return ACTIONS[Math.floor(Math.random() * ACTIONS.length)]
   }
 
   async submitAction(round) {
     if (!this.joined || this.dead) return { success: false }
 
-    const action = this.pickAction()
+    const action = await this.pickAction()
     // Random delay 0-500ms to create realistic parallel spread
     await sleep(Math.random() * 500)
 

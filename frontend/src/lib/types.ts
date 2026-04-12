@@ -11,6 +11,19 @@ export enum PlayerStatus {
   DEAD = 2,
 }
 
+export enum GamePhase {
+  WAITING = 0,
+  ACTIVE  = 1,
+  ENDED   = 2,
+}
+
+export enum AgentStrategy {
+  RANDOM     = 0,
+  AGGRESSIVE = 1,
+  DEFENSIVE  = 2,
+  ADAPTIVE   = 3,
+}
+
 export interface Player {
   addr: `0x${string}`
   health: bigint
@@ -28,6 +41,13 @@ export interface GameState {
   activePlayers: bigint
   totalPlayers: bigint
   resolved: boolean
+}
+
+export interface FullGameState extends GameState {
+  pool: bigint
+  maxRounds: bigint
+  gamePhase: GamePhase
+  winners: [`0x${string}`, `0x${string}`, `0x${string}`]
 }
 
 export interface RoundResult {
@@ -56,30 +76,14 @@ export interface PendingAction {
   txHash?: string
 }
 
-export type JoinStep = 'idle' | 'joining' | 'authorizing' | 'funding' | 'done'
-
-export interface SessionKeyState {
-  isActive: boolean
-  isExpired: boolean
-  address: `0x${string}` | null
-  expiresAt: number | null
-  secondsRemaining: number
-  authorize: () => Promise<void>
-  revoke: () => Promise<void>
-  signAction: (action: Action) => Promise<`0x${string}`>
-}
-
-export enum GamePhase {
-  WAITING = 0,
-  ACTIVE  = 1,
-  ENDED   = 2,
-}
-
-export interface FullGameState extends GameState {
-  pool: bigint
-  maxRounds: bigint
-  gamePhase: GamePhase
-  winners: [`0x${string}`, `0x${string}`, `0x${string}`]
+export interface AgentInfo {
+  owner: `0x${string}`
+  strategy: AgentStrategy
+  balance: bigint
+  active: boolean
+  gamesPlayed: bigint
+  totalKills: bigint
+  topThreeFinishes: bigint
 }
 
 export interface PrizeAmounts {
@@ -87,3 +91,5 @@ export interface PrizeAmounts {
   secondPrize: bigint
   thirdPrize: bigint
 }
+
+export type JoinStep = 'idle' | 'joining' | 'done'

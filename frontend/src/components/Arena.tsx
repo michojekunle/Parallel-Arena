@@ -8,9 +8,11 @@ import { ParallelVisualization } from './ParallelVisualization'
 import { SpectatorPanel } from './SpectatorPanel'
 import { WalletConnect } from './WalletConnect'
 import { EndGameModal } from './EndGameModal'
+import { AgentPanel } from './AgentPanel'
 import { useWallet } from '@/hooks/useWallet'
 import { Action, PlayerStatus, GamePhase } from '@/lib/types'
 import { formatEther } from 'viem'
+import { useState } from 'react'
 
 export function Arena(): React.ReactElement {
   const {
@@ -30,7 +32,6 @@ export function Arena(): React.ReactElement {
     joinStep,
     showJoinButton,
     lastRoundMs,
-    sessionKey,
     prizeAmounts,
     hasClaimed,
     joinAndAuthorize,
@@ -41,6 +42,7 @@ export function Arena(): React.ReactElement {
   } = useArena()
 
   const { isConnected, address } = useWallet()
+  const [showAgents, setShowAgents] = useState(false)
 
   const activePlayers = players.filter(p => p.status === PlayerStatus.ACTIVE)
   const deadPlayers = players.filter(p => p.status === PlayerStatus.DEAD)
@@ -49,14 +51,6 @@ export function Arena(): React.ReactElement {
   pendingActions.forEach(pa => {
     actionMap.set(pa.player.toLowerCase(), pa.action)
   })
-
-  const handleAuthorizeSession = async (): Promise<void> => {
-    try {
-      await sessionKey.authorize()
-    } catch {
-      // errors handled inside useSessionKey/useArena
-    }
-  }
 
   const isGameEnded = fullGameState?.gamePhase === GamePhase.ENDED
   const prizePool = fullGameState?.pool ?? 0n
@@ -114,12 +108,19 @@ export function Arena(): React.ReactElement {
             </div>
           )}
 
-          {/* Session key indicator */}
-          {sessionKey.isActive && (
-            <div className="hidden sm:flex items-center gap-1.5 border border-[#26D962]/30 px-2 py-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-[#26D962] animate-pulse" />
-              <span className="text-[9px] font-bold text-[#26D962] uppercase tracking-widest">AUTO-SIGN</span>
-            </div>
+          {/* Agent panel toggle */}
+          {isConnected && (
+            <button
+              onClick={() => setShowAgents(v => !v)}
+              className={`hidden sm:flex items-center gap-1.5 border px-2 py-1 text-[9px] font-bold uppercase tracking-widest transition-colors ${
+                showAgents
+                  ? 'border-[#26D962]/60 text-[#26D962] bg-[#26D962]/5'
+                  : 'border-[#333] text-[#555] hover:border-[#555] hover:text-[#888]'
+              }`}
+            >
+              <span>🤖</span>
+              <span>AGENTS</span>
+            </button>
           )}
 
           {gameState && (
@@ -212,8 +213,13 @@ export function Arena(): React.ReactElement {
           </div>
         </div>
 
-        {/* Right: Parallel visualization — desktop only */}
+        {/* Right: Agent panel (overlay) or Parallel visualization */}
         <div className="hidden md:flex flex-col overflow-hidden">
+          {showAgents && isConnected ? (
+            <div className="overflow-y-auto flex-1">
+              <AgentPanel myAddress={address} />
+            </div>
+          ) : (
           <ParallelVisualization
             pendingActions={pendingActions}
             lastResult={lastResult}
@@ -221,6 +227,7 @@ export function Arena(): React.ReactElement {
             isFlashing={isFlashing}
             lastRoundMs={lastRoundMs}
           />
+          )}
         </div>
       </div>
 
@@ -236,11 +243,9 @@ export function Arena(): React.ReactElement {
             roundResolved={gameState?.resolved ?? false}
             timeRemaining={timeRemaining}
             joinStep={joinStep}
-            sessionKey={sessionKey}
             onJoinAndAuthorize={joinAndAuthorize}
             onAction={submitAction}
             onResolve={resolveRound}
-            onAuthorizeSession={handleAuthorizeSession}
           />
         ) : (
           <SpectatorPanel

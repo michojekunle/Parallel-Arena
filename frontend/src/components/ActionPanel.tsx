@@ -1,6 +1,6 @@
 'use client'
 
-import { Action, JoinStep, SessionKeyState, Player, PlayerStatus } from '@/lib/types'
+import { Action, JoinStep, Player, PlayerStatus } from '@/lib/types'
 
 interface ActionPanelProps {
   myPlayer: Player | null
@@ -11,11 +11,9 @@ interface ActionPanelProps {
   roundResolved: boolean
   timeRemaining: number
   joinStep: JoinStep
-  sessionKey: SessionKeyState
   onJoinAndAuthorize: () => void
   onAction: (action: Action) => void
   onResolve: () => void
-  onAuthorizeSession: () => void
 }
 
 const ACTION_CONFIG = [
@@ -24,19 +22,10 @@ const ACTION_CONFIG = [
   { action: Action.HEAL,   label: '💚 HEAL',   color: '#26D962' },
 ] as const
 
-function formatTime(secs: number): string {
-  const h = Math.floor(secs / 3600)
-  const m = Math.floor((secs % 3600) / 60)
-  const s = secs % 60
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
-}
-
 const JOIN_STEPS: Record<JoinStep, string> = {
-  idle:        '',
-  joining:     '1/3 Joining arena...',
-  authorizing: '2/3 Authorizing session key...',
-  funding:     '3/3 Funding session key...',
-  done:        'Ready!',
+  idle:    '',
+  joining: 'Joining arena (1 confirmation)...',
+  done:    'Ready!',
 }
 
 export function ActionPanel({
@@ -48,25 +37,19 @@ export function ActionPanel({
   roundResolved,
   timeRemaining,
   joinStep,
-  sessionKey,
   onJoinAndAuthorize,
   onAction,
   onResolve,
-  onAuthorizeSession,
 }: ActionPanelProps): React.ReactElement {
   const isDead = myPlayer?.status === PlayerStatus.DEAD
   const canAct = isInArena && !hasActed && !roundResolved
   const canResolve = timeRemaining === 0 && !roundResolved
-  const isJoining = joinStep !== 'idle' && joinStep !== 'done'
+  const isJoining = joinStep === 'joining'
 
   const getButtonStyle = (action: Action, color: string) => {
     const isSelected = myAction === action
     if (!canAct && !isSelected) {
-      return {
-        borderColor: '#1a1a1a',
-        color: '#333',
-        background: 'transparent',
-      }
+      return { borderColor: '#1a1a1a', color: '#333', background: 'transparent' }
     }
     return {
       borderColor: isSelected ? 'white' : color,
@@ -92,39 +75,6 @@ export function ActionPanel({
         </div>
       )}
 
-      {/* Session key status bar */}
-      {isInArena && (
-        <div className={`px-4 py-2 flex items-center justify-between text-[10px] font-mono border-b ${
-          sessionKey.isActive
-            ? 'border-[#26D962]/20 bg-[#26D962]/5'
-            : 'border-[#FDBA74]/20 bg-[#FDBA74]/5'
-        }`}>
-          {sessionKey.isActive ? (
-            <>
-              <span className="text-[#26D962] flex items-center gap-1.5">
-                <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#26D962] animate-pulse" />
-                AUTO-SIGNING ACTIVE — no popups
-              </span>
-              <span className="text-[#26D962]/60">
-                expires {formatTime(sessionKey.secondsRemaining)}
-              </span>
-            </>
-          ) : (
-            <>
-              <span className="text-[#FDBA74]">
-                ⚠ Each action requires a wallet popup
-              </span>
-              <button
-                className="text-[#FDBA74] border border-[#FDBA74]/40 px-2 py-0.5 hover:bg-[#FDBA74]/10 transition-colors"
-                onClick={onAuthorizeSession}
-              >
-                ACTIVATE SESSION KEY
-              </button>
-            </>
-          )}
-        </div>
-      )}
-
       <div className="px-4 py-3 sm:px-6">
         <div className="flex items-center justify-between mb-3">
           <span className="text-[10px] text-white font-bold uppercase tracking-[0.2em]">
@@ -146,13 +96,20 @@ export function ActionPanel({
 
         <div className="flex gap-2 sm:gap-3 flex-wrap">
           {showJoinButton ? (
-            <button
-              className="flex-1 min-w-[140px] py-3 px-4 text-[11px] font-bold uppercase tracking-[0.15em] border-2 border-white text-white hover:bg-white hover:text-black transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-              onClick={onJoinAndAuthorize}
-              disabled={isJoining}
-            >
-              {isJoining ? JOIN_STEPS[joinStep] : '⚡ INITIALIZE + AUTHORIZE'}
-            </button>
+            <div className="flex-1 flex flex-col gap-1">
+              <button
+                className="flex-1 min-w-[140px] py-3 px-4 text-[11px] font-bold uppercase tracking-[0.15em] border-2 border-white text-white hover:bg-white hover:text-black transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                onClick={onJoinAndAuthorize}
+                disabled={isJoining}
+              >
+                {isJoining ? JOIN_STEPS[joinStep] : '⚡ JOIN GAME (0.01 MON)'}
+              </button>
+              {!isJoining && (
+                <span className="text-[9px] text-[#555] font-mono">
+                  1 confirmation to join — all actions use gasless signatures
+                </span>
+              )}
+            </div>
           ) : (
             <>
               {ACTION_CONFIG.map(({ action, label, color }) => (
@@ -181,8 +138,7 @@ export function ActionPanel({
 
         {hasActed && (
           <div className="mt-2 text-[10px] font-mono text-[#26D962]">
-            {sessionKey.isActive ? '⚡ Auto-signed — ' : '✓ '}
-            Action locked in. Waiting for round to resolve...
+            ⚡ Signed — Action locked in. Waiting for round to resolve...
           </div>
         )}
         {roundResolved && (
