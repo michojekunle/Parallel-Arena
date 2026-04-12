@@ -7,6 +7,7 @@ import { formatEther } from 'viem'
 
 interface EndGameModalProps {
   isOpen: boolean
+  onClose: () => void
   winners: [`0x${string}`, `0x${string}`, `0x${string}`]
   players: Player[]
   prizeAmounts: PrizeAmounts | null
@@ -22,6 +23,7 @@ const RANK_PCT    = ['50%', '30%', '20%']
 
 export function EndGameModal({
   isOpen,
+  onClose,
   winners,
   players,
   prizeAmounts,
@@ -52,8 +54,16 @@ export function EndGameModal({
           initial={{ scale: 0.8, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
           transition={{ type: 'spring', damping: 20 }}
-          className="w-full max-w-md border border-[#1a1a1a] bg-black p-6"
+          className="w-full max-w-md border border-[#1a1a1a] bg-black p-6 relative"
         >
+          {/* Close button */}
+          <button 
+            onClick={onClose}
+            className="absolute top-4 right-4 text-[#444] hover:text-white transition-colors"
+          >
+            ✕
+          </button>
+
           {/* Header */}
           <div className="text-center mb-6">
             <motion.div

@@ -7,6 +7,7 @@ interface PlayerCardProps {
   player: Player
   currentAction?: Action
   isMe?: boolean
+  isTarget?: boolean
 }
 
 function HealthBar({ health }: { health: number }): React.ReactElement {
@@ -22,18 +23,22 @@ function HealthBar({ health }: { health: number }): React.ReactElement {
   )
 }
 
-export function PlayerCard({ player, currentAction, isMe }: PlayerCardProps): React.ReactElement {
+export function PlayerCard({ player, currentAction, isMe, isTarget }: PlayerCardProps): React.ReactElement {
   const isDead = player.status === PlayerStatus.DEAD
   const hasActed = currentAction !== undefined && currentAction !== Action.NONE
   const health = Number(player.health)
 
   let cardClass = 'player-card border border-[#333333] p-4 relative overflow-hidden transition-all duration-200'
   if (isDead) cardClass += ' dead'
+  else if (isTarget) cardClass += ' border-[#EE0000] bg-[#EE0000]/5'
   else if (hasActed) cardClass += ' acted'
   else if (isMe) cardClass += ' active'
 
   return (
     <div className={cardClass}>
+      {isTarget && !isDead && (
+        <div className="absolute top-0 left-0 bg-[#EE0000] text-white text-[8px] font-bold px-1.5 py-0.5 uppercase tracking-tighter z-10">TARGET</div>
+      )}
       {isMe && (
         <div className="absolute top-0 right-0 bg-white text-black text-[8px] font-bold px-1.5 py-0.5 uppercase tracking-tighter">ME</div>
       )}

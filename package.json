@@ -1,0 +1,14 @@
+{
+  "name": "parallel-arena",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "cd frontend && npm run dev",
+    "arena": "node scripts/orchestrate.js",
+    "fund": "node scripts/distributeMon.js",
+    "resolve": "node scripts/autoResolve.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "viem": "^2.9.15"
+  }
+}

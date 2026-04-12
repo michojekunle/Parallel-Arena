@@ -9,6 +9,8 @@ import {
   Action, Player, GameState, RoundResult, LogEntry, PendingAction,
   PlayerStatus, JoinStep, GamePhase, FullGameState, PrizeAmounts,
 } from '@/lib/types'
+import { useGameSounds } from './useGameSounds'
+import { useSessionKey } from './useSessionKey'
 
 const publicClient = createPublicClient({
   chain: monadTestnet,
@@ -70,6 +72,8 @@ export function useArena() {
   const { data: walletClient } = useWalletClient()
   const { address } = useAccount()
   const { signTypedDataAsync } = useSignTypedData()
+  const { play } = useGameSounds()
+  const { sessionAddress, walletClient: sessionWallet, setIsAuthorized, isAuthorized } = useSessionKey(address)
 
   const [gameState, setGameState] = useState<GameState | null>(null)
   const [fullGameState, setFullGameState] = useState<FullGameState | null>(null)
@@ -86,6 +90,19 @@ export function useArena() {
   const [lastRoundMs, setLastRoundMs] = useState<number | null>(null)
   const [prizeAmounts, setPrizeAmounts] = useState<PrizeAmounts | null>(null)
   const [hasClaimed, setHasClaimed] = useState(false)
+  const [lastRoundNum, setLastRoundNum] = useState<number>(0)
+
+  // Sound Effects Triggers
+  useEffect(() => {
+    if (!gameState) return
+    const currentRound = Number(gameState.round)
+    const isEnded = fullGameState?.gamePhase === GamePhase.ENDED
+
+    if (currentRound > lastRoundNum) {
+      play(isEnded ? 'VICTORY' : 'RESOLVE')
+      setLastRoundNum(currentRound)
+    }
+  }, [gameState, fullGameState, lastRoundNum, play])
 
   const lastRoundRef = useRef<bigint>(-1n)
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -250,12 +267,13 @@ export function useArena() {
   // WRITE FUNCTIONS
   // ============================================================
 
-  // Join the arena — 1 wallet tx, 0.01 MON entry fee
+  // Join the arena and authorize silent session key (1 wallet tx)
   const joinAndAuthorize = useCallback(async (): Promise<void> => {
-    if (!walletClient || !address) { showToast('Connect wallet first', 'error'); return }
+    if (!walletClient || !address || !sessionAddress) { showToast('Connect wallet first', 'error'); return }
     try {
       setJoinStep('joining')
-      showToast('Joining arena... (1 confirmation)', 'success')
+      showToast('Step 1/2: Joining arena...', 'success')
+      
       const hash = await walletClient.writeContract({
         address: CONTRACT_ADDRESS,
         abi: ABI,
@@ -264,9 +282,30 @@ export function useArena() {
         gasPrice: parseGwei('250'),
       })
       await publicClient.waitForTransactionReceipt({ hash })
-      addLog({ round: Number(gameState?.round ?? 0), message: 'You joined the arena', type: 'join' })
+
+      showToast('Step 2/2: Authorizing Silent Protocol...', 'success')
+      const authHash = await walletClient.writeContract({
+        address: CONTRACT_ADDRESS,
+        abi: ABI,
+        functionName: 'authorizeSessionKey',
+        args: [sessionAddress, BigInt(Math.floor(Date.now() / 1000) + 86400)], // 24h
+        gasPrice: parseGwei('250'),
+      })
+      
+      // Also send 0.01 MON for gas to the session address
+      await walletClient.sendTransaction({
+        to: sessionAddress,
+        value: parseEther('0.01'),
+        gasPrice: parseGwei('250'),
+      })
+
+      await publicClient.waitForTransactionReceipt({ hash: authHash })
+      
+      setIsAuthorized(true)
+      addLog({ round: Number(gameState?.round ?? 0), message: 'You joined & authorized silent protocol', type: 'join' })
       setJoinStep('done')
-      showToast('⚡ Joined! Actions use gasless signatures.', 'success')
+      showToast('⚡ Session Protocol Active. Silent moves enabled.', 'success')
+      play('JOIN')
       await fetchState()
     } catch (e: unknown) {
       await fetchState().catch(() => null)
@@ -279,7 +318,7 @@ export function useArena() {
         'error'
       )
     }
-  }, [walletClient, address, gameState, addLog, showToast, fetchState])
+  }, [walletClient, address, sessionAddress, setIsAuthorized, gameState, addLog, showToast, fetchState, play])
 
   // Submit action via EIP-712 typed signature → relay API (no wallet popup)
   const submitAction = useCallback(async (action: Action): Promise<void> => {
@@ -292,44 +331,50 @@ export function useArena() {
     setMyAction(action)
     setPendingActions(prev => [...prev.filter(p => p.player !== address), { player: address, action, round }])
 
-    try {
-      // Fetch current nonce for the player
-      const nonce = await publicClient.readContract({
-        address: CONTRACT_ADDRESS, abi: ABI, functionName: 'nonces', args: [address],
-      }) as bigint
-      const deadline = BigInt(Math.floor(Date.now() / 1000) + 60)
+    // Play sound FX
+    if (action === Action.ATTACK) play('ATTACK')
+    else if (action === Action.HEAL) play('HEAL')
+    else if (action === Action.DEFEND) play('DEFEND')
 
-      // Sign typed data — shows MetaMask "Sign this message" dialog (no gas)
-      const signature = await signTypedDataAsync({
-        domain: EIP712_DOMAIN,
-        types: ACTION_PERMIT_TYPES,
-        primaryType: 'ActionPermit',
-        message: {
+    try {
+      if (isAuthorized && sessionWallet) {
+        // SILENT PROTOCOL: Submit directly via session key (No wallet popup!)
+        const hash = await sessionWallet.writeContract({
+          address: CONTRACT_ADDRESS,
+          abi: ABI,
+          functionName: 'submitAction',
+          args: [action],
+          gasPrice: parseGwei('250'),
+        })
+        addLog({ round, message: `You submitted ${label} ⚡ (silent)`, type: 'action', txHash: hash })
+        showToast(`⚡ ${label} submitted (Silent Mode)`, 'success')
+      } else {
+        // FALLBACK: Permit-Relay flow (One-off signatures)
+        const nonce = await publicClient.readContract({
+          address: CONTRACT_ADDRESS, abi: ABI, functionName: 'nonces', args: [address],
+        }) as bigint
+        const deadline = BigInt(Math.floor(Date.now() / 1000) + 60)
+
+        const signature = await signTypedDataAsync({
+          domain: EIP712_DOMAIN,
+          types: ACTION_PERMIT_TYPES,
+          primaryType: 'ActionPermit',
+          message: { player: address, action, round: BigInt(round), nonce, deadline },
+        })
+
+        const { v, r, s } = splitSig(signature)
+        const txHash = await relay({
+          type: 'action',
           player: address,
           action,
-          round: BigInt(round),
-          nonce,
-          deadline,
-        },
-      })
-
-      const { v, r, s } = splitSig(signature)
-
-      // Relay submits the tx — no popup, relayer pays gas
-      const txHash = await relay({
-        type: 'action',
-        player: address,
-        action,
-        nonce: nonce.toString(),
-        deadline: deadline.toString(),
-        v, r, s,
-      })
-
-      addLog({ round, message: `You submitted ${label} ⚡ (gasless)`, type: 'action', txHash })
-      showToast(`⚡ ${label} submitted (gasless)!`, 'success')
-      setPendingActions(prev =>
-        prev.map(p => p.player === address && p.round === round ? { ...p, txHash } : p)
-      )
+          nonce: nonce.toString(),
+          deadline: deadline.toString(),
+          v, r, s,
+        })
+        addLog({ round, message: `You submitted ${label} ⚡ (gasless)`, type: 'action', txHash })
+        showToast(`⚡ ${label} submitted (gasless)!`, 'success')
+      }
+      await fetchState()
     } catch (e: unknown) {
       setMyAction(Action.NONE)
       setPendingActions(prev => prev.filter(p => p.player !== address))
@@ -440,5 +485,7 @@ export function useArena() {
     resolveRound,
     claimPrize,
     resetGame,
+    sessionAddress,
+    isAuthorized,
   }
 }

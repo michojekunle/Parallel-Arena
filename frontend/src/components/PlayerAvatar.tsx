@@ -10,6 +10,7 @@ interface PlayerAvatarProps {
   currentAction?: Action
   isMe?: boolean
   isUnderAttack?: boolean   // flashed red when attacked this round
+  isTarget?: boolean        // highlighted when lowest HP in arena
 }
 
 // Deterministic avatar glyph based on address
@@ -44,7 +45,7 @@ function SegmentedHealthBar({ health, maxHealth = 100 }: { health: number; maxHe
   )
 }
 
-export function PlayerAvatar({ player, currentAction, isMe, isUnderAttack }: PlayerAvatarProps): React.ReactElement {
+export function PlayerAvatar({ player, currentAction, isMe, isUnderAttack, isTarget }: PlayerAvatarProps): React.ReactElement {
   const isDead = player.status === PlayerStatus.DEAD
   const hasActed = currentAction !== undefined && currentAction !== Action.NONE
   const health = Number(player.health)
@@ -71,19 +72,43 @@ export function PlayerAvatar({ player, currentAction, isMe, isUnderAttack }: Pla
 
   const borderColor = isDead
     ? '#1a1a1a'
-    : hasActed
-      ? ACTION_COLORS[currentAction as Action] || '#333'
-      : isMe
-        ? playerColor
-        : '#222'
+    : isTarget
+      ? '#EE0000'
+      : hasActed
+        ? ACTION_COLORS[currentAction as Action] || '#333'
+        : isMe
+          ? playerColor
+          : '#222'
+
+  const isCritical = health > 0 && health < 30
+
+  // Shudder on attack or taking damage
+  const isImpacted = showEffect === 'attack' || isUnderAttack
 
   return (
     <motion.div
       className="relative rounded overflow-hidden select-none"
-      style={{ background: '#0a0a0a', border: `1px solid ${borderColor}` }}
-      animate={isUnderAttack ? { x: [-4, 4, -3, 3, 0] } : {}}
-      transition={{ duration: 0.3, ease: 'easeOut' }}
+      style={{ 
+        background: isTarget ? 'rgba(238,0,0,0.05)' : '#0a0a0a', 
+        border: `1px solid ${borderColor}`,
+        boxShadow: isTarget ? '0 0 10px rgba(238,0,0,0.2)' : 'none'
+      }}
+      animate={{
+        x: isImpacted ? [-8, 8, -6, 6, -4, 4, 0] : 0,
+        backgroundColor: isCritical ? ['#0a0a0a', '#300000', '#0a0a0a'] : (isTarget ? 'rgba(238,0,0,0.05)' : '#0a0a0a'),
+        opacity: isDead ? 0.4 : 1
+      }}
+      transition={{ 
+        duration: isImpacted ? 0.3 : 2, 
+        repeat: isCritical && !isImpacted ? Infinity : 0,
+        ease: 'easeInOut' 
+      }}
     >
+      {/* Target Badge */}
+      {isTarget && !isDead && (
+        <div className="absolute top-0 left-0 bg-[#EE0000] text-white text-[7px] font-bold px-1 py-0.5 uppercase tracking-tighter z-10">TARGET</div>
+      )}
+      
       {/* Background flash effects */}
       <AnimatePresence>
         {showEffect === 'attack' && (

@@ -9,10 +9,11 @@ import { SpectatorPanel } from './SpectatorPanel'
 import { WalletConnect } from './WalletConnect'
 import { EndGameModal } from './EndGameModal'
 import { AgentPanel } from './AgentPanel'
+import { Guide } from './Guide'
 import { useWallet } from '@/hooks/useWallet'
 import { Action, PlayerStatus, GamePhase } from '@/lib/types'
 import { formatEther } from 'viem'
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 
 export function Arena(): React.ReactElement {
   const {
@@ -43,14 +44,24 @@ export function Arena(): React.ReactElement {
 
   const { isConnected, address } = useWallet()
   const [showAgents, setShowAgents] = useState(false)
+  const [isGuideOpen, setIsGuideOpen] = useState(false)
+  const [dismissedModal, setDismissedModal] = useState(false)
 
-  const activePlayers = players.filter(p => p.status === PlayerStatus.ACTIVE)
-  const deadPlayers = players.filter(p => p.status === PlayerStatus.DEAD)
+  const activePlayers = useMemo(() => players.filter(p => p.status === PlayerStatus.ACTIVE), [players])
+  const deadPlayers = useMemo(() => players.filter(p => p.status === PlayerStatus.DEAD), [players])
 
-  const actionMap = new Map<string, Action>()
-  pendingActions.forEach(pa => {
-    actionMap.set(pa.player.toLowerCase(), pa.action)
-  })
+  const weakestPlayerAddr = useMemo(() => {
+    if (activePlayers.length <= 1) return null
+    return [...activePlayers].sort((a, b) => Number(a.health) - Number(b.health))[0]?.addr
+  }, [activePlayers])
+
+  const actionMap = useMemo(() => {
+    const map = new Map<string, Action>()
+    pendingActions.forEach(pa => {
+      map.set(pa.player.toLowerCase(), pa.action)
+    })
+    return map
+  }, [pendingActions])
 
   const isGameEnded = fullGameState?.gamePhase === GamePhase.ENDED
   const prizePool = fullGameState?.pool ?? 0n
@@ -58,16 +69,22 @@ export function Arena(): React.ReactElement {
   const winners = fullGameState?.winners ?? ['0x0000000000000000000000000000000000000000', '0x0000000000000000000000000000000000000000', '0x0000000000000000000000000000000000000000'] as [`0x${string}`, `0x${string}`, `0x${string}`]
 
   return (
-    <div className="min-h-screen flex flex-col bg-black text-white">
+    <div className="min-h-screen flex flex-col bg-black text-white crt-overlay relative overflow-hidden">
+      <div className="scanline" />
+      <Guide isOpen={isGuideOpen} onClose={() => setIsGuideOpen(false)} />
       {/* End Game Modal */}
       <EndGameModal
-        isOpen={isGameEnded}
+        isOpen={isGameEnded && !dismissedModal}
+        onClose={() => setDismissedModal(true)}
         winners={winners}
         players={players}
         prizeAmounts={prizeAmounts}
         myAddress={address}
         onClaim={claimPrize}
-        onReset={resetGame}
+        onReset={() => {
+          setDismissedModal(false)
+          resetGame()
+        }}
         hasClaimed={hasClaimed}
       />
 
@@ -85,16 +102,37 @@ export function Arena(): React.ReactElement {
         </div>
       )}
 
+      {/* Lobby Banner for dismissed modal */}
+      {isGameEnded && dismissedModal && (
+        <div className="bg-[#26D962] text-black text-[10px] font-bold py-2 px-4 flex items-center justify-between sticky top-0 z-[50]">
+          <div className="flex items-center gap-2">
+            <span className="w-1.5 h-1.5 rounded-full bg-black animate-pulse" />
+            <span className="tracking-widest uppercase">PROTOCOL_HALTED: SESSION_COMPLETE</span>
+          </div>
+          <button 
+            onClick={() => {
+              setDismissedModal(false)
+              resetGame()
+            }}
+            className="border border-black/20 font-black px-3 py-1 hover:bg-black hover:text-white transition-all text-[9px] uppercase tracking-tighter"
+          >
+            INITIALIZE NEW SESSION →
+          </button>
+        </div>
+      )}
+
       {/* Header */}
       <header className="border-b border-[#1a1a1a] px-4 sm:px-6 py-3 flex items-center justify-between sticky top-0 bg-black z-40">
         <div className="flex items-center gap-3 sm:gap-5 min-w-0">
-          <h1 className="text-sm font-bold tracking-tighter whitespace-nowrap">
-            PARALLEL<span className="text-[#555] font-light ml-1">ARENA</span>
+          <h1 className="text-sm font-bold tracking-tighter whitespace-nowrap cursor-pointer" onClick={() => setIsGuideOpen(true)}>
+            PARALLEL<span className="text-[#555] font-light ml-1 lowercase">arena</span>
           </h1>
-          <div className="hidden sm:block h-4 w-px bg-[#1a1a1a]" />
-          <span className="hidden sm:block text-[9px] text-[#555] uppercase tracking-widest truncate">
-            Monad Parallel Execution
-          </span>
+          <button 
+            onClick={() => setIsGuideOpen(true)}
+            className="hidden sm:block text-[9px] font-bold border border-white/20 px-2 py-0.5 hover:bg-white hover:text-black transition-all uppercase tracking-widest"
+          >
+            HOW TO PLAY
+          </button>
         </div>
 
         <div className="flex items-center gap-2 sm:gap-4">
@@ -163,11 +201,6 @@ export function Arena(): React.ReactElement {
                 ACTIVE PLAYERS
               </span>
               <div className="flex items-center gap-3">
-                {prizePool > 0n && (
-                  <span className="sm:hidden text-[9px] font-mono text-[#FDBA74]">
-                    POOL: {formatEther(prizePool)} MON
-                  </span>
-                )}
                 <span className="text-[9px] font-mono text-[#444]">
                   {activePlayers.length} alive · {deadPlayers.length} out
                 </span>
@@ -193,6 +226,7 @@ export function Arena(): React.ReactElement {
                   player={player}
                   currentAction={actionMap.get(player.addr.toLowerCase())}
                   isMe={myPlayer?.addr.toLowerCase() === player.addr.toLowerCase()}
+                  isTarget={player.addr.toLowerCase() === weakestPlayerAddr?.toLowerCase()}
                 />
               ))}
             </div>
@@ -220,13 +254,13 @@ export function Arena(): React.ReactElement {
               <AgentPanel myAddress={address} />
             </div>
           ) : (
-          <ParallelVisualization
-            pendingActions={pendingActions}
-            lastResult={lastResult}
-            currentRound={Number(gameState?.round ?? 0)}
-            isFlashing={isFlashing}
-            lastRoundMs={lastRoundMs}
-          />
+            <ParallelVisualization
+              pendingActions={pendingActions}
+              lastResult={lastResult}
+              currentRound={Number(gameState?.round ?? 0)}
+              isFlashing={isFlashing}
+              lastRoundMs={lastRoundMs}
+            />
           )}
         </div>
       </div>
