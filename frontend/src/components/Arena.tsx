@@ -11,10 +11,14 @@ import { EndGameModal } from './EndGameModal'
 import { AgentPanel } from './AgentPanel'
 import { Guide } from './Guide'
 import { BackgroundMusic } from './BackgroundMusic'
+import { ParticleSystem } from './ParticleSystem'
+import { AttackEffect } from './AttackEffect'
+import { HealEffect } from './HealEffect'
+import { DefendEffect } from './DefendEffect'
 import { useWallet } from '@/hooks/useWallet'
 import { Action, PlayerStatus, GamePhase } from '@/lib/types'
 import { formatEther } from 'viem'
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 
 export function Arena(): React.ReactElement {
   const {
@@ -54,6 +58,26 @@ export function Arena(): React.ReactElement {
   const [dismissedModal, setDismissedModal] = useState(false)
   const [isAttackHovered, setIsAttackHovered] = useState(false)
 
+  // Visual effects triggered by my player's action
+  const [activeAttack, setActiveAttack] = useState<{ attacker: string; target: string; damage: number } | null>(null)
+  const [activeHeal, setActiveHeal] = useState<{ target: string; amount: number } | null>(null)
+  const [activeDefend, setActiveDefend] = useState<{ target: string } | null>(null)
+
+  // Watch my player's action to trigger effects
+  useEffect(() => {
+    if (!address) return
+    if (myAction === Action.ATTACK) {
+      setActiveAttack({ attacker: address, target: address, damage: 20 })
+      setTimeout(() => setActiveAttack(null), 1600)
+    } else if (myAction === Action.HEAL) {
+      setActiveHeal({ target: address, amount: 15 })
+      setTimeout(() => setActiveHeal(null), 1400)
+    } else if (myAction === Action.DEFEND) {
+      setActiveDefend({ target: address })
+      setTimeout(() => setActiveDefend(null), 1500)
+    }
+  }, [myAction, address])
+
   const activePlayers = useMemo(() => players.filter(p => p.status === PlayerStatus.ACTIVE), [players])
   const deadPlayers = useMemo(() => players.filter(p => p.status === PlayerStatus.DEAD), [players])
 
@@ -72,6 +96,14 @@ export function Arena(): React.ReactElement {
 
   return (
     <div className="min-h-screen flex flex-col bg-black text-white crt-overlay relative overflow-hidden">
+      {/* Ambient particle system + background effects */}
+      <ParticleSystem />
+
+      {/* Active visual effects */}
+      {activeAttack && <AttackEffect attacker={activeAttack.attacker} target={activeAttack.target} isActive damage={activeAttack.damage} />}
+      {activeHeal && <HealEffect target={activeHeal.target} isActive amount={activeHeal.amount} />}
+      {activeDefend && <DefendEffect target={activeDefend.target} isActive />}
+
       <div className="scanline" />
       <Guide isOpen={isGuideOpen} onClose={() => setIsGuideOpen(false)} />
 

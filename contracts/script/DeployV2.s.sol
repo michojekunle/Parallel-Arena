@@ -17,10 +17,11 @@ import {ParallelArenaV2} from "../src/ParallelArenaV2.sol";
 ///   PRIVATE_KEY     — deployer private key
 contract DeployV2 is Script {
     function run() external {
+        uint256 deployerKey = vm.envUint("PRIVATE_KEY");
         address relayer = vm.envAddress("RELAYER_ADDRESS");
         require(relayer != address(0), "RELAYER_ADDRESS not set");
 
-        vm.startBroadcast();
+        vm.startBroadcast(deployerKey);
         ParallelArenaV2 arena = new ParallelArenaV2(relayer);
         vm.stopBroadcast();
 

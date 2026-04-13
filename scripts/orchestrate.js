@@ -120,11 +120,20 @@ async function orchestrate() {
   })
   log('info', 'Auto-resolver process spawned', { pid: resolveProc.pid })
 
+  const resetProc = spawn('node', ['scripts/autoReset.js'], {
+    stdio: 'inherit',
+    env: { ...process.env },
+  })
+  log('info', 'Auto-reset daemon spawned', { pid: resetProc.pid })
+
   agentProc.on('exit', (code, signal) => {
     log(code === 0 ? 'info' : 'error', 'Agents process exited', { code, signal })
   })
   resolveProc.on('exit', (code, signal) => {
     log(code === 0 ? 'info' : 'error', 'Auto-resolver process exited', { code, signal })
+  })
+  resetProc.on('exit', (code, signal) => {
+    log(code === 0 ? 'info' : 'error', 'Auto-reset daemon exited', { code, signal })
   })
 
   // 4. Periodic relayer gas check every 5 minutes
@@ -142,6 +151,7 @@ async function orchestrate() {
     clearInterval(gasMonitor)
     agentProc.kill()
     resolveProc.kill()
+    resetProc.kill()
     process.exit(0)
   }
 

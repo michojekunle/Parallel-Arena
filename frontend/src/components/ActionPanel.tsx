@@ -71,7 +71,7 @@ export function ActionPanel({
   const isDead = myPlayer?.status === PlayerStatus.DEAD
   // Fallback: If phase is undefined (RPC failure), allow acting anyway to avoid hard-locking users
   const isPhaseActive = gamePhase === GamePhase.ACTIVE || gamePhase === undefined
-  const canAct = isInArena && !hasActed && !roundResolved && isPhaseActive && gamePhase !== GamePhase.ENDED
+  const canAct = isInArena && !hasActed && !roundResolved && isPhaseActive
   const canResolve = timeRemaining === 0 && !roundResolved
   const isJoining = joinStep === 'joining'
   const urgentTimer = timeRemaining <= 5 && timeRemaining > 0 && isInArena && !hasActed

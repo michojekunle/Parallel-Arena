@@ -93,10 +93,23 @@ export function useSessionKey(userAddress: `0x${string}` | undefined): {
     if (!userAddress) return
     let cancelled = false
     loadOrCreateSessionKey(userAddress)
-      .then(key => { if (!cancelled) setSessionKey(key) })
+      .then(key => {
+        if (!cancelled) {
+          setSessionKey(key)
+          // Session key loaded from storage → automatically authorize it.
+          // On-chain expiry check happens in useArena.submitAction().
+          // This enables immediate silent execution on page load without
+          // requiring user to re-authorize every session.
+          setIsAuthorized(true)
+        }
+      })
       .catch(() => {
         // Web Crypto unavailable (non-HTTPS env) — use ephemeral key, don't persist
-        if (!cancelled) setSessionKey(generatePrivateKey())
+        if (!cancelled) {
+          setSessionKey(generatePrivateKey())
+          // Ephemeral key also auto-authorized for this session only
+          setIsAuthorized(true)
+        }
       })
     return () => { cancelled = true }
   }, [userAddress])
