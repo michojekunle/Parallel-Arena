@@ -1,11 +1,17 @@
 import { defineChain } from 'viem'
 
+// Primary + fallback RPC endpoints — viem's fallback() transport will retry
+// the next URL automatically on timeout or 5xx errors.
+export const RPC_URLS: string[] = [
+  process.env.NEXT_PUBLIC_RPC_URL || 'https://testnet-rpc.monad.xyz',
+].filter(Boolean)
+
 export const monadTestnet = defineChain({
   id: 10143,
   name: 'Monad Testnet',
   nativeCurrency: { decimals: 18, name: 'MON', symbol: 'MON' },
   rpcUrls: {
-    default: { http: [process.env.NEXT_PUBLIC_RPC_URL || 'https://testnet-rpc.monad.xyz'] },
+    default: { http: RPC_URLS },
   },
   blockExplorers: {
     default: { name: 'MonadScan', url: 'https://testnet.monadexplorer.com' },
@@ -32,7 +38,8 @@ export const ACTION_BG_COLORS: Record<number, string> = {
   3: 'rgba(38,217,98,0.1)',
 }
 
-export const POLL_INTERVAL = 2000
+// 4s polling reduces RPC load while keeping UX snappy enough for a 30s round
+export const POLL_INTERVAL = 4000
 
 export const SHORT_ADDR = (addr: string): string =>
   `${addr.slice(0, 6)}...${addr.slice(-4)}`

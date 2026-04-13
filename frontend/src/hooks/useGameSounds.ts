@@ -1,76 +1,74 @@
 'use client'
 
-import { useCallback, useRef, useEffect } from 'react'
-
-const SOUNDS = {
-  ATTACK: 'https://cdn.pixabay.com/audio/2022/03/10/audio_c976939958.mp3', // Laser pulse
-  HEAL: 'https://cdn.pixabay.com/audio/2021/08/04/audio_0625c15139.mp3',   // Shine/Recovery
-  DEFEND: 'https://cdn.pixabay.com/audio/2022/01/18/audio_2452077e68.mp3', // Shield/Metal
-  JOIN: 'https://cdn.pixabay.com/audio/2022/03/10/audio_5179373998.mp3',   // Digital enter
-  VICTORY: 'https://cdn.pixabay.com/audio/2021/08/04/audio_c394747ebc.mp3', // Victory chime
-  DEATH: 'https://cdn.pixabay.com/audio/2022/10/18/audio_31c883907c.mp3',   // Alarm/Failure
-  RESOLVE: 'https://cdn.pixabay.com/audio/2022/03/24/audio_362e54e4c2.mp3'  // Boom/Thud
-}
+import { useCallback, useRef } from 'react'
 
 export function useGameSounds() {
-  const audioRefs = useRef<Record<string, HTMLAudioElement>>({})
+  const audioContextRef = useRef<AudioContext | null>(null)
 
-  // Pre-load sounds on mount
-  useEffect(() => {
-    Object.entries(SOUNDS).forEach(([key, url]) => {
-      const audio = new Audio(url)
-      audio.load()
-      audioRefs.current[key] = audio
-    })
-
-    // Browser audio unlock mechanism
-    const unlock = () => {
-      Object.values(audioRefs.current).forEach(audio => {
-        audio.play().then(() => {
-          audio.pause()
-          audio.currentTime = 0
-        }).catch(() => {})
-      })
-      window.removeEventListener('click', unlock)
-    }
-    window.addEventListener('click', unlock)
-    return () => window.removeEventListener('click', unlock)
-  }, [])
-
-  const play = useCallback((key: keyof typeof SOUNDS) => {
-    const audio = audioRefs.current[key]
+  const playSynthetic = useCallback((type: string) => {
+    if (typeof window === 'undefined') return
     
-    // Synthetic fallback (OSCILLATOR) if audio files are blocked or fail
-    const playFallback = () => {
-      if (typeof window === 'undefined') return
-      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)()
-      const osc = ctx.createOscillator()
-      const gain = ctx.createGain()
-      osc.connect(gain)
-      gain.connect(ctx.destination)
-      
-      const frequencies: Record<string, number> = { ATTACK: 150, HEAL: 880, DEFEND: 440, RESOLVE: 80, JOIN: 600 }
-      osc.frequency.setValueAtTime(frequencies[key] || 440, ctx.currentTime)
-      osc.type = 'square'
-      gain.gain.setValueAtTime(0.1, ctx.currentTime)
-      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.1)
-      osc.start()
-      osc.stop(ctx.currentTime + 0.1)
+    if (!audioContextRef.current) {
+      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)()
     }
+    
+    const ctx = audioContextRef.current
+    if (ctx.state === 'suspended') ctx.resume()
 
-    if (!audio) {
-      playFallback()
-      return
-    }
+    const osc = ctx.createOscillator()
+    const gn = ctx.createGain()
+    osc.connect(gn)
+    gn.connect(ctx.destination)
 
-    try {
-      const clone = audio.cloneNode() as HTMLAudioElement
-      clone.volume = 0.5
-      clone.play().catch(playFallback)
-    } catch (e) {
-      playFallback()
+    const now = ctx.currentTime
+
+    switch (type) {
+      case 'ATTACK':
+        osc.type = 'sawtooth'
+        osc.frequency.setValueAtTime(440, now)
+        osc.frequency.exponentialRampToValueAtTime(110, now + 0.1)
+        gn.gain.setValueAtTime(0.1, now)
+        gn.gain.exponentialRampToValueAtTime(0.01, now + 0.1)
+        osc.start(now)
+        osc.stop(now + 0.1)
+        break
+      case 'HEAL':
+        osc.type = 'sine'
+        osc.frequency.setValueAtTime(523, now)
+        osc.frequency.exponentialRampToValueAtTime(1046, now + 0.2)
+        gn.gain.setValueAtTime(0.1, now)
+        gn.gain.exponentialRampToValueAtTime(0.01, now + 0.2)
+        osc.start(now)
+        osc.stop(now + 0.2)
+        break
+      case 'DEFEND':
+        osc.type = 'square'
+        osc.frequency.setValueAtTime(220, now)
+        gn.gain.setValueAtTime(0.05, now)
+        gn.gain.exponentialRampToValueAtTime(0.01, now + 0.1)
+        osc.start(now)
+        osc.stop(now + 0.1)
+        break
+      case 'JOIN':
+        osc.type = 'triangle'
+        osc.frequency.setValueAtTime(220, now)
+        osc.frequency.linearRampToValueAtTime(440, now + 0.2)
+        gn.gain.setValueAtTime(0.1, now)
+        gn.gain.linearRampToValueAtTime(0, now + 0.3)
+        osc.start(now)
+        osc.stop(now + 0.3)
+        break
+      case 'RESOLVE':
+        osc.type = 'sine'
+        osc.frequency.setValueAtTime(150, now)
+        osc.frequency.exponentialRampToValueAtTime(40, now + 0.4)
+        gn.gain.setValueAtTime(0.2, now)
+        gn.gain.linearRampToValueAtTime(0, now + 0.4)
+        osc.start(now)
+        osc.stop(now + 0.4)
+        break
     }
   }, [])
 
-  return { play }
+  return { play: playSynthetic }
 }

@@ -5,6 +5,7 @@ export const ABI = parseAbi([
   'struct Player { address addr; uint256 health; uint256 attack; uint256 defense; uint8 status; uint256 roundsPlayed; uint256 kills; uint256 rank; }',
   'struct RoundResult { uint256 round; uint256 actionsProcessed; uint256 attacksLanded; uint256 healsApplied; uint256 defendersProtected; uint256 playersEliminated; uint256 resolvedAt; }',
   'struct AgentInfo { address owner; uint8 strategy; uint256 balance; bool active; uint256 gamesPlayed; uint256 totalKills; uint256 topThreeFinishes; }',
+  'struct PlayerStats { uint32 gamesPlayed; uint32 wins; uint32 kills; uint32 totalDamage; }',
 
   // Join & game
   'function joinArena() external payable',
@@ -24,6 +25,11 @@ export const ABI = parseAbi([
   'function getTimeRemaining() external view returns (uint256)',
   'function getPrizeAmounts() external view returns (uint256 firstPrize, uint256 secondPrize, uint256 thirdPrize)',
   'function getWinners() external view returns (address[3])',
+
+  // Leaderboard
+  'function getPlayerStats(address player) external view returns (PlayerStats)',
+  'function getAllTimeParticipants() external view returns (address[])',
+  'function getLeaderboard() external view returns (address[] addrs, PlayerStats[] stats)',
 
   // Prize
   'function claimPrize() external',
@@ -73,6 +79,7 @@ export const ABI = parseAbi([
   'event RewardClaimed(address indexed recipient, uint256 amount)',
   'event SessionKeyAuthorized(address indexed player, address indexed sessionKey, uint256 expiresAt)',
   'event SessionKeyRevoked(address indexed player, address indexed sessionKey)',
+  'event AttackMissed(address indexed attacker, uint256 round)',
 ])
 
 export const CONTRACT_ADDRESS = (process.env.NEXT_PUBLIC_CONTRACT_ADDRESS || '0x0000000000000000000000000000000000000000') as `0x${string}`

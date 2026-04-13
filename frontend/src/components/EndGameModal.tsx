@@ -1,9 +1,19 @@
 'use client'
 
+import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { PrizeAmounts, GamePhase, Player } from '@/lib/types'
-import { SHORT_ADDR } from '@/lib/constants'
+import { createPublicClient, http } from 'viem'
+import { PrizeAmounts, Player } from '@/lib/types'
+import { SHORT_ADDR, monadTestnet } from '@/lib/constants'
+import { ABI, CONTRACT_ADDRESS } from '@/lib/contract'
+import { useGameReplay } from '@/hooks/useGameReplay'
+import { ReplayViewer } from './ReplayViewer'
 import { formatEther } from 'viem'
+
+const publicClient = createPublicClient({
+  chain: monadTestnet,
+  transport: http(process.env.NEXT_PUBLIC_RPC_URL || 'https://testnet-rpc.monad.xyz'),
+})
 
 interface EndGameModalProps {
   isOpen: boolean
@@ -32,6 +42,34 @@ export function EndGameModal({
   onReset,
   hasClaimed,
 }: EndGameModalProps): React.ReactElement | null {
+  const [showReplay, setShowReplay] = useState(false)
+  const [gameEndBlock, setGameEndBlock] = useState<bigint | null>(null)
+
+  // Fetch the block number of the GameEnded event when modal opens
+  useEffect(() => {
+    if (!isOpen || !CONTRACT_ADDRESS || CONTRACT_ADDRESS === '0x0000000000000000000000000000000000000000') return
+    let cancelled = false
+
+    publicClient
+      .getBlockNumber()
+      .then(latest => {
+        const fromBlock = latest > 500n ? latest - 500n : 0n
+        return publicClient.getContractEvents({
+          address: CONTRACT_ADDRESS, abi: ABI, eventName: 'GameEnded', fromBlock,
+        })
+      })
+      .then(events => {
+        if (cancelled || events.length === 0) return
+        const last = events[events.length - 1]
+        setGameEndBlock((last as { blockNumber: bigint }).blockNumber)
+      })
+      .catch(() => null)
+
+    return () => { cancelled = true }
+  }, [isOpen])
+
+  const { frames, loading: replayLoading } = useGameReplay(showReplay ? gameEndBlock : null, players)
+
   if (!isOpen) return null
 
   const prizeByRank = prizeAmounts
@@ -47,17 +85,17 @@ export function EndGameModal({
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        className="fixed inset-0 z-50 flex items-center justify-center p-4"
+        className="fixed inset-0 z-50 flex items-center justify-center p-4 overflow-y-auto"
         style={{ background: 'rgba(0,0,0,0.85)' }}
       >
         <motion.div
           initial={{ scale: 0.8, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
           transition={{ type: 'spring', damping: 20 }}
-          className="w-full max-w-md border border-[#1a1a1a] bg-black p-6 relative"
+          className="w-full max-w-lg border border-[#1a1a1a] bg-black p-6 relative my-4"
         >
-          {/* Close button */}
-          <button 
+          {/* Close */}
+          <button
             onClick={onClose}
             className="absolute top-4 right-4 text-[#444] hover:text-white transition-colors"
           >
@@ -73,9 +111,7 @@ export function EndGameModal({
             >
               ⚡
             </motion.div>
-            <h2 className="text-sm font-bold tracking-widest uppercase text-white">
-              BATTLE ENDED
-            </h2>
+            <h2 className="text-sm font-bold tracking-widest uppercase text-white">BATTLE ENDED</h2>
             <p className="text-[9px] text-[#555] mt-1 uppercase tracking-widest">
               Top 3 survivors claim the prize pool
             </p>
@@ -92,7 +128,7 @@ export function EndGameModal({
           )}
 
           {/* Winners */}
-          <div className="space-y-2 mb-6">
+          <div className="space-y-2 mb-4">
             {winners.map((addr, i) => {
               const isZero = !addr || addr === '0x0000000000000000000000000000000000000000'
               const isMyRow = addr.toLowerCase() === myAddress?.toLowerCase()
@@ -127,6 +163,21 @@ export function EndGameModal({
                 </div>
               )
             })}
+          </div>
+
+          {/* Replay toggle */}
+          <div className="mb-4">
+            <button
+              onClick={() => setShowReplay(v => !v)}
+              className="w-full py-2 text-[10px] font-bold uppercase tracking-widest border border-[#333] text-[#555] hover:border-[#3396FF] hover:text-[#3396FF] transition-all"
+            >
+              {showReplay ? '▲ Hide Replay' : '▶ Watch Replay'}
+            </button>
+            {showReplay && (
+              <div className="mt-2">
+                <ReplayViewer frames={frames} players={players} loading={replayLoading} />
+              </div>
+            )}
           </div>
 
           {/* Actions */}

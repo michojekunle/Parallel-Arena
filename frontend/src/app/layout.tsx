@@ -3,15 +3,16 @@
 import './globals.css'
 import '@/styles/animations.css'
 import '@rainbow-me/rainbowkit/styles.css'
-import { WagmiProvider, createConfig, http } from 'wagmi'
+import { WagmiProvider, createConfig, http, fallback } from 'wagmi'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RainbowKitProvider, darkTheme } from '@rainbow-me/rainbowkit'
-import { monadTestnet } from '@/lib/constants'
+import { monadTestnet, RPC_URLS } from '@/lib/constants'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 
 const config = createConfig({
   chains: [monadTestnet],
   transports: {
-    [monadTestnet.id]: http(process.env.NEXT_PUBLIC_RPC_URL || 'https://testnet-rpc.monad.xyz'),
+    [monadTestnet.id]: fallback(RPC_URLS.map(url => http(url, { timeout: 8_000 }))),
   },
 })
 
@@ -39,7 +40,9 @@ export default function RootLayout({
                 fontStack: 'system',
               })}
             >
-              {children}
+              <ErrorBoundary>
+                {children}
+              </ErrorBoundary>
             </RainbowKitProvider>
           </QueryClientProvider>
         </WagmiProvider>

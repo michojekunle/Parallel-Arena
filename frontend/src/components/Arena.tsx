@@ -10,6 +10,7 @@ import { WalletConnect } from './WalletConnect'
 import { EndGameModal } from './EndGameModal'
 import { AgentPanel } from './AgentPanel'
 import { Guide } from './Guide'
+import { BackgroundMusic } from './BackgroundMusic'
 import { useWallet } from '@/hooks/useWallet'
 import { Action, PlayerStatus, GamePhase } from '@/lib/types'
 import { formatEther } from 'viem'
@@ -23,6 +24,7 @@ export function Arena(): React.ReactElement {
     myPlayer,
     myAction,
     isInArena,
+    isEliminated,
     hasActed,
     pendingActions,
     lastResult,
@@ -35,6 +37,10 @@ export function Arena(): React.ReactElement {
     lastRoundMs,
     prizeAmounts,
     hasClaimed,
+    resolvedTxHashes,
+    txStatus,
+    txHash,
+    attackTarget,
     joinAndAuthorize,
     submitAction,
     resolveRound,
@@ -46,14 +52,10 @@ export function Arena(): React.ReactElement {
   const [showAgents, setShowAgents] = useState(false)
   const [isGuideOpen, setIsGuideOpen] = useState(false)
   const [dismissedModal, setDismissedModal] = useState(false)
+  const [isAttackHovered, setIsAttackHovered] = useState(false)
 
   const activePlayers = useMemo(() => players.filter(p => p.status === PlayerStatus.ACTIVE), [players])
   const deadPlayers = useMemo(() => players.filter(p => p.status === PlayerStatus.DEAD), [players])
-
-  const weakestPlayerAddr = useMemo(() => {
-    if (activePlayers.length <= 1) return null
-    return [...activePlayers].sort((a, b) => Number(a.health) - Number(b.health))[0]?.addr
-  }, [activePlayers])
 
   const actionMap = useMemo(() => {
     const map = new Map<string, Action>()
@@ -72,7 +74,7 @@ export function Arena(): React.ReactElement {
     <div className="min-h-screen flex flex-col bg-black text-white crt-overlay relative overflow-hidden">
       <div className="scanline" />
       <Guide isOpen={isGuideOpen} onClose={() => setIsGuideOpen(false)} />
-      {/* End Game Modal */}
+
       <EndGameModal
         isOpen={isGameEnded && !dismissedModal}
         onClose={() => setDismissedModal(true)}
@@ -102,18 +104,15 @@ export function Arena(): React.ReactElement {
         </div>
       )}
 
-      {/* Lobby Banner for dismissed modal */}
+      {/* Game-ended lobby banner */}
       {isGameEnded && dismissedModal && (
         <div className="bg-[#26D962] text-black text-[10px] font-bold py-2 px-4 flex items-center justify-between sticky top-0 z-[50]">
           <div className="flex items-center gap-2">
             <span className="w-1.5 h-1.5 rounded-full bg-black animate-pulse" />
             <span className="tracking-widest uppercase">PROTOCOL_HALTED: SESSION_COMPLETE</span>
           </div>
-          <button 
-            onClick={() => {
-              setDismissedModal(false)
-              resetGame()
-            }}
+          <button
+            onClick={() => { setDismissedModal(false); resetGame() }}
             className="border border-black/20 font-black px-3 py-1 hover:bg-black hover:text-white transition-all text-[9px] uppercase tracking-tighter"
           >
             INITIALIZE NEW SESSION →
@@ -127,16 +126,21 @@ export function Arena(): React.ReactElement {
           <h1 className="text-sm font-bold tracking-tighter whitespace-nowrap cursor-pointer" onClick={() => setIsGuideOpen(true)}>
             PARALLEL<span className="text-[#555] font-light ml-1 lowercase">arena</span>
           </h1>
-          <button 
+          <button
             onClick={() => setIsGuideOpen(true)}
             className="hidden sm:block text-[9px] font-bold border border-white/20 px-2 py-0.5 hover:bg-white hover:text-black transition-all uppercase tracking-widest"
           >
             HOW TO PLAY
           </button>
+          <a
+            href="/leaderboard"
+            className="hidden sm:block text-[9px] font-bold border border-[#333] text-[#555] px-2 py-0.5 hover:border-white hover:text-white transition-all uppercase tracking-widest"
+          >
+            LEADERBOARD
+          </a>
         </div>
 
         <div className="flex items-center gap-2 sm:gap-4">
-          {/* Prize pool badge */}
           {prizePool > 0n && (
             <div className="hidden sm:flex items-center gap-1.5 border border-[#FDBA74]/30 px-2 py-1">
               <span className="text-[8px] text-[#555] uppercase tracking-widest">POOL</span>
@@ -146,7 +150,6 @@ export function Arena(): React.ReactElement {
             </div>
           )}
 
-          {/* Agent panel toggle */}
           {isConnected && (
             <button
               onClick={() => setShowAgents(v => !v)}
@@ -186,6 +189,7 @@ export function Arena(): React.ReactElement {
               </div>
             </div>
           )}
+          <BackgroundMusic />
           <WalletConnect />
         </div>
       </header>
@@ -195,7 +199,6 @@ export function Arena(): React.ReactElement {
         {/* Left: Player grid */}
         <div className="border-r border-[#1a1a1a] overflow-y-auto">
           <div className="p-3 sm:p-5">
-            {/* Active players */}
             <div className="flex items-center justify-between mb-3">
               <span className="text-[10px] text-white font-bold uppercase tracking-[0.2em]">
                 ACTIVE PLAYERS
@@ -218,17 +221,23 @@ export function Arena(): React.ReactElement {
               </div>
             )}
 
-            {/* Active players grid — responsive columns */}
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2">
-              {activePlayers.map(player => (
-                <PlayerAvatar
-                  key={player.addr}
-                  player={player}
-                  currentAction={actionMap.get(player.addr.toLowerCase())}
-                  isMe={myPlayer?.addr.toLowerCase() === player.addr.toLowerCase()}
-                  isTarget={player.addr.toLowerCase() === weakestPlayerAddr?.toLowerCase()}
-                />
-              ))}
+              {activePlayers.map(player => {
+                // Show attack target ring when player hovers ATTACK button
+                const isPreviewTarget = isAttackHovered
+                  && attackTarget?.toLowerCase() === player.addr.toLowerCase()
+                const isWeakest = !isAttackHovered
+                  && player.addr.toLowerCase() === attackTarget?.toLowerCase()
+                return (
+                  <PlayerAvatar
+                    key={player.addr}
+                    player={player}
+                    currentAction={actionMap.get(player.addr.toLowerCase())}
+                    isMe={myPlayer?.addr.toLowerCase() === player.addr.toLowerCase()}
+                    isTarget={isPreviewTarget || isWeakest}
+                  />
+                )
+              })}
             </div>
 
             {deadPlayers.length > 0 && (
@@ -247,7 +256,7 @@ export function Arena(): React.ReactElement {
           </div>
         </div>
 
-        {/* Right: Agent panel (overlay) or Parallel visualization */}
+        {/* Right: Agent panel or Parallel visualization */}
         <div className="hidden md:flex flex-col overflow-hidden">
           {showAgents && isConnected ? (
             <div className="overflow-y-auto flex-1">
@@ -260,26 +269,32 @@ export function Arena(): React.ReactElement {
               currentRound={Number(gameState?.round ?? 0)}
               isFlashing={isFlashing}
               lastRoundMs={lastRoundMs}
+              resolvedTxHashes={resolvedTxHashes}
             />
           )}
         </div>
       </div>
 
-      {/* Bottom bar: action panel or spectator panel + battle log */}
+      {/* Bottom bar */}
       <div className="border-t border-[#1a1a1a] flex-shrink-0">
         {isConnected ? (
           <ActionPanel
             myPlayer={myPlayer}
             isInArena={isInArena}
+            isEliminated={isEliminated ?? false}
             showJoinButton={showJoinButton}
             hasActed={hasActed}
             myAction={myAction}
             roundResolved={gameState?.resolved ?? false}
             timeRemaining={timeRemaining}
+            gamePhase={fullGameState?.gamePhase}
             joinStep={joinStep}
+            txStatus={txStatus}
+            txHash={txHash}
             onJoinAndAuthorize={joinAndAuthorize}
             onAction={submitAction}
             onResolve={resolveRound}
+            onAttackHoverChange={setIsAttackHovered}
           />
         ) : (
           <SpectatorPanel

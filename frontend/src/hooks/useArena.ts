@@ -1,10 +1,10 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { createPublicClient, http, parseGwei, parseEther } from 'viem'
+import { createPublicClient, http, fallback, parseGwei, parseEther } from 'viem'
 import { useWalletClient, useAccount, useSignTypedData } from 'wagmi'
 import { ABI, CONTRACT_ADDRESS } from '@/lib/contract'
-import { monadTestnet, POLL_INTERVAL, SHORT_ADDR, ACTION_LABELS } from '@/lib/constants'
+import { monadTestnet, RPC_URLS, POLL_INTERVAL, SHORT_ADDR, ACTION_LABELS } from '@/lib/constants'
 import {
   Action, Player, GameState, RoundResult, LogEntry, PendingAction,
   PlayerStatus, JoinStep, GamePhase, FullGameState, PrizeAmounts,
@@ -14,11 +14,14 @@ import { useSessionKey } from './useSessionKey'
 
 const publicClient = createPublicClient({
   chain: monadTestnet,
-  transport: http(process.env.NEXT_PUBLIC_RPC_URL || 'https://testnet-rpc.monad.xyz'),
+  transport: http('https://testnet-rpc.monad.xyz', {
+    retryCount: 5,
+    retryDelay: 1000,
+    timeout: 30000,
+  }),
 })
 
 // EIP-712 domain — must match contract constructor.
-// chainId must be `number`, not bigint — wagmi's TypedDataDomain expects number.
 const EIP712_DOMAIN = {
   name: 'ParallelArena',
   version: '1',
@@ -44,16 +47,31 @@ const CLAIM_PERMIT_TYPES = {
   ],
 } as const
 
+export type TxStatus = 'idle' | 'submitting' | 'pending' | 'confirmed' | 'failed'
+
 function makeId(): string {
   return Math.random().toString(36).slice(2)
 }
 
-// Split compact 65-byte signature into v, r, s
 function splitSig(sig: `0x${string}`): { v: number; r: `0x${string}`; s: `0x${string}` } {
   return {
     r: sig.slice(0, 66) as `0x${string}`,
     s: `0x${sig.slice(66, 130)}` as `0x${string}`,
     v: parseInt(sig.slice(130, 132), 16),
+  }
+}
+
+// Fetch server unix time (seconds). Falls back to local clock if the
+// endpoint is unreachable — slight clock drift is tolerable within the
+// extended 180s / 300s deadline windows.
+async function getServerTime(): Promise<number> {
+  try {
+    const res = await fetch('/api/time', { cache: 'no-store' })
+    if (!res.ok) throw new Error('non-ok')
+    const { unix } = await res.json() as { unix: number }
+    return unix
+  } catch {
+    return Math.floor(Date.now() / 1000)
   }
 }
 
@@ -66,6 +84,11 @@ async function relay(body: Record<string, unknown>): Promise<`0x${string}`> {
   const data = await res.json() as { txHash?: `0x${string}`; error?: string }
   if (!res.ok || data.error) throw new Error(data.error || 'Relay failed')
   return data.txHash!
+}
+
+function loadPersistedLog(): LogEntry[] {
+  if (typeof sessionStorage === 'undefined') return []
+  try { return JSON.parse(sessionStorage.getItem('arena_log') ?? '[]') as LogEntry[] } catch { return [] }
 }
 
 export function useArena() {
@@ -81,7 +104,7 @@ export function useArena() {
   const [myAction, setMyAction] = useState<Action>(Action.NONE)
   const [pendingActions, setPendingActions] = useState<PendingAction[]>([])
   const [lastResult, setLastResult] = useState<RoundResult | null>(null)
-  const [log, setLog] = useState<LogEntry[]>([])
+  const [log, setLog] = useState<LogEntry[]>(loadPersistedLog)
   const [timeRemaining, setTimeRemaining] = useState<number>(0)
   const [isFlashing, setIsFlashing] = useState(false)
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
@@ -91,13 +114,39 @@ export function useArena() {
   const [prizeAmounts, setPrizeAmounts] = useState<PrizeAmounts | null>(null)
   const [hasClaimed, setHasClaimed] = useState(false)
   const [lastRoundNum, setLastRoundNum] = useState<number>(0)
+  const [resolvedTxHashes, setResolvedTxHashes] = useState<`0x${string}`[]>([])
+
+  // Tx status machine (6.1)
+  const [txStatus, setTxStatus] = useState<TxStatus>('idle')
+  const [txHash, setTxHash] = useState<`0x${string}` | null>(null)
+  const txStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const setTxDone = useCallback((status: 'confirmed' | 'failed') => {
+    setTxStatus(status)
+    if (txStatusTimerRef.current) clearTimeout(txStatusTimerRef.current)
+    txStatusTimerRef.current = setTimeout(() => { setTxStatus('idle'); setTxHash(null) }, 8_000)
+  }, [])
+
+  // Session key expiry cache (1.3)
+  const sessionExpiryRef = useRef<{ value: bigint; fetchedAt: number } | null>(null)
+
+  const getSessionExpiry = useCallback(async (player: `0x${string}`): Promise<bigint> => {
+    const now = Date.now()
+    if (sessionExpiryRef.current && now - sessionExpiryRef.current.fetchedAt < 30_000) {
+      return sessionExpiryRef.current.value
+    }
+    const expiry = await publicClient.readContract({
+      address: CONTRACT_ADDRESS, abi: ABI, functionName: 'sessionKeyExpiry', args: [player],
+    }) as bigint
+    sessionExpiryRef.current = { value: expiry, fetchedAt: now }
+    return expiry
+  }, [])
 
   // Sound Effects Triggers
   useEffect(() => {
     if (!gameState) return
     const currentRound = Number(gameState.round)
     const isEnded = fullGameState?.gamePhase === GamePhase.ENDED
-
     if (currentRound > lastRoundNum) {
       play(isEnded ? 'VICTORY' : 'RESOLVE')
       setLastRoundNum(currentRound)
@@ -109,7 +158,11 @@ export function useArena() {
   const unwatchRef = useRef<(() => void) | null>(null)
 
   const addLog = useCallback((entry: Omit<LogEntry, 'id' | 'timestamp'>) => {
-    setLog(prev => [...prev.slice(-199), { ...entry, id: makeId(), timestamp: Date.now() }])
+    setLog(prev => {
+      const next = [...prev.slice(-199), { ...entry, id: makeId(), timestamp: Date.now() }]
+      try { sessionStorage.setItem('arena_log', JSON.stringify(next)) } catch { /* quota exceeded */ }
+      return next
+    })
   }, [])
 
   const showToast = useCallback((message: string, type: 'success' | 'error') => {
@@ -157,7 +210,11 @@ export function useArena() {
           setIsFlashing(true)
           setRoundStartMs(prev => { if (prev !== null) setLastRoundMs(Date.now() - prev); return null })
           setTimeout(() => setIsFlashing(false), 1000)
-          setPendingActions([])
+          // Snapshot hashes of actions that resolved this round for the visualizer
+          setPendingActions(prev => {
+            setResolvedTxHashes(prev.flatMap(p => p.txHash ? [p.txHash as `0x${string}`] : []))
+            return []
+          })
           setMyAction(Action.NONE)
         } catch { /* result not yet available */ }
       }
@@ -182,14 +239,14 @@ export function useArena() {
       address: CONTRACT_ADDRESS, abi: ABI, eventName: 'ActionSubmitted', pollingInterval: POLL_INTERVAL,
       onLogs: (logs) => {
         logs.forEach((log: unknown) => {
-          const t = log as { args: { player: `0x${string}`; action: number; round: bigint } }
+          const t = log as { args: { player: `0x${string}`; action: number; round: bigint }; transactionHash?: `0x${string}` }
           const { player, action, round } = t.args
           const label = ACTION_LABELS[action as keyof typeof ACTION_LABELS] || 'UNKNOWN'
           addLog({ round: Number(round), message: `${SHORT_ADDR(player)} submitted ${label}`, type: 'action' })
           setRoundStartMs(prev => prev === null ? Date.now() : prev)
           setPendingActions(prev => {
             const filtered = prev.filter(p => p.player !== player)
-            return [...filtered, { player, action: action as Action, round: Number(round) }]
+            return [...filtered, { player, action: action as Action, round: Number(round), txHash: t.transactionHash }]
           })
         })
       },
@@ -267,13 +324,12 @@ export function useArena() {
   // WRITE FUNCTIONS
   // ============================================================
 
-  // Join the arena and authorize silent session key (1 wallet tx)
   const joinAndAuthorize = useCallback(async (): Promise<void> => {
     if (!walletClient || !address || !sessionAddress) { showToast('Connect wallet first', 'error'); return }
     try {
       setJoinStep('joining')
       showToast('Step 1/2: Joining arena...', 'success')
-      
+
       const hash = await walletClient.writeContract({
         address: CONTRACT_ADDRESS,
         abi: ABI,
@@ -288,11 +344,11 @@ export function useArena() {
         address: CONTRACT_ADDRESS,
         abi: ABI,
         functionName: 'authorizeSessionKey',
-        args: [sessionAddress, BigInt(Math.floor(Date.now() / 1000) + 86400)], // 24h
+        args: [sessionAddress, BigInt(Math.floor(Date.now() / 1000) + 86400)],
         gasPrice: parseGwei('250'),
       })
-      
-      // Also send 0.01 MON for gas to the session address
+
+      // Fund session address for gas
       await walletClient.sendTransaction({
         to: sessionAddress,
         value: parseEther('0.01'),
@@ -300,7 +356,9 @@ export function useArena() {
       })
 
       await publicClient.waitForTransactionReceipt({ hash: authHash })
-      
+      // Invalidate expiry cache after fresh authorization
+      sessionExpiryRef.current = null
+
       setIsAuthorized(true)
       addLog({ round: Number(gameState?.round ?? 0), message: 'You joined & authorized silent protocol', type: 'join' })
       setJoinStep('done')
@@ -320,7 +378,6 @@ export function useArena() {
     }
   }, [walletClient, address, sessionAddress, setIsAuthorized, gameState, addLog, showToast, fetchState, play])
 
-  // Submit action via EIP-712 typed signature → relay API (no wallet popup)
   const submitAction = useCallback(async (action: Action): Promise<void> => {
     if (!address) { showToast('Connect wallet first', 'error'); return }
 
@@ -331,53 +388,72 @@ export function useArena() {
     setMyAction(action)
     setPendingActions(prev => [...prev.filter(p => p.player !== address), { player: address, action, round }])
 
-    // Play sound FX
     if (action === Action.ATTACK) play('ATTACK')
     else if (action === Action.HEAL) play('HEAL')
     else if (action === Action.DEFEND) play('DEFEND')
 
+    setTxStatus('submitting')
+    setTxHash(null)
+
     try {
+      let hash: `0x${string}`
+
+      const now = await getServerTime()
+
       if (isAuthorized && sessionWallet) {
-        // SILENT PROTOCOL: Submit directly via session key (No wallet popup!)
-        const hash = await sessionWallet.writeContract({
-          address: CONTRACT_ADDRESS,
-          abi: ABI,
-          functionName: 'submitAction',
-          args: [action],
-          gasPrice: parseGwei('250'),
-        })
-        addLog({ round, message: `You submitted ${label} ⚡ (silent)`, type: 'action', txHash: hash })
-        showToast(`⚡ ${label} submitted (Silent Mode)`, 'success')
+        // 1.3 — validate session key expiry before silent submit
+        const expiry = await getSessionExpiry(address)
+        if (expiry < BigInt(now)) {
+          setIsAuthorized(false)
+          sessionExpiryRef.current = null
+          showToast('Session expired — falling back to gasless', 'error')
+          const nonce = await publicClient.readContract({
+            address: CONTRACT_ADDRESS, abi: ABI, functionName: 'nonces', args: [address],
+          }) as bigint
+          const deadline = BigInt(now + 180)
+          const signature = await signTypedDataAsync({
+            domain: EIP712_DOMAIN, types: ACTION_PERMIT_TYPES, primaryType: 'ActionPermit',
+            message: { player: address, action, round: BigInt(round), nonce, deadline },
+          })
+          const { v, r, s } = splitSig(signature)
+          hash = await relay({ type: 'action', player: address, action, nonce: nonce.toString(), deadline: deadline.toString(), v, r, s })
+        } else {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          hash = await (sessionWallet as any).writeContract({
+            address: CONTRACT_ADDRESS, abi: ABI, functionName: 'submitAction',
+            args: [action], gasPrice: parseGwei('250'),
+          })
+        }
       } else {
-        // FALLBACK: Permit-Relay flow (One-off signatures)
+        // FALLBACK: Permit-Relay flow
         const nonce = await publicClient.readContract({
           address: CONTRACT_ADDRESS, abi: ABI, functionName: 'nonces', args: [address],
         }) as bigint
-        const deadline = BigInt(Math.floor(Date.now() / 1000) + 60)
-
+        const deadline = BigInt(now + 180)
         const signature = await signTypedDataAsync({
-          domain: EIP712_DOMAIN,
-          types: ACTION_PERMIT_TYPES,
-          primaryType: 'ActionPermit',
+          domain: EIP712_DOMAIN, types: ACTION_PERMIT_TYPES, primaryType: 'ActionPermit',
           message: { player: address, action, round: BigInt(round), nonce, deadline },
         })
-
         const { v, r, s } = splitSig(signature)
-        const txHash = await relay({
-          type: 'action',
-          player: address,
-          action,
-          nonce: nonce.toString(),
-          deadline: deadline.toString(),
-          v, r, s,
-        })
-        addLog({ round, message: `You submitted ${label} ⚡ (gasless)`, type: 'action', txHash })
-        showToast(`⚡ ${label} submitted (gasless)!`, 'success')
+        hash = await relay({ type: 'action', player: address, action, nonce: nonce.toString(), deadline: deadline.toString(), v, r, s })
       }
+
+      setTxHash(hash)
+      setTxStatus('pending')
+      addLog({ round, message: `You submitted ${label} ⚡`, type: 'action', txHash: hash })
+
+      // Confirm async — don't block the UI
+      publicClient.waitForTransactionReceipt({ hash }).then(() => {
+        setTxDone('confirmed')
+      }).catch(() => {
+        setTxDone('failed')
+      })
+
       await fetchState()
     } catch (e: unknown) {
       setMyAction(Action.NONE)
       setPendingActions(prev => prev.filter(p => p.player !== address))
+      setTxDone('failed')
       const msg = e instanceof Error ? e.message : 'Unknown error'
       showToast(
         msg.includes('Already acted') ? 'Already acted this round'
@@ -386,7 +462,7 @@ export function useArena() {
         'error'
       )
     }
-  }, [address, gameState, signTypedDataAsync, addLog, showToast])
+  }, [address, gameState, isAuthorized, sessionWallet, signTypedDataAsync, getSessionExpiry, setIsAuthorized, addLog, showToast, fetchState, play, setTxDone])
 
   const resolveRound = useCallback(async (): Promise<void> => {
     if (!walletClient) { showToast('Connect wallet first', 'error'); return }
@@ -403,36 +479,28 @@ export function useArena() {
     }
   }, [walletClient, showToast, fetchState])
 
-  // Claim prize via EIP-712 signed permit → relay (no popup)
   const claimPrize = useCallback(async (): Promise<void> => {
     if (!address) { showToast('Connect wallet first', 'error'); return }
     try {
+      const now = await getServerTime()
       const nonce = await publicClient.readContract({
         address: CONTRACT_ADDRESS, abi: ABI, functionName: 'nonces', args: [address],
       }) as bigint
-      const deadline = BigInt(Math.floor(Date.now() / 1000) + 120)
+      const deadline = BigInt(now + 300)
 
       const signature = await signTypedDataAsync({
-        domain: EIP712_DOMAIN,
-        types: CLAIM_PERMIT_TYPES,
-        primaryType: 'ClaimPermit',
+        domain: EIP712_DOMAIN, types: CLAIM_PERMIT_TYPES, primaryType: 'ClaimPermit',
         message: { player: address, nonce, deadline },
       })
 
       const { v, r, s } = splitSig(signature)
       showToast('Claiming prize (gasless)...', 'success')
 
-      const txHash = await relay({
-        type: 'claim',
-        player: address,
-        nonce: nonce.toString(),
-        deadline: deadline.toString(),
-        v, r, s,
-      })
+      const txHash = await relay({ type: 'claim', player: address, nonce: nonce.toString(), deadline: deadline.toString(), v, r, s })
 
       setHasClaimed(true)
-      showToast('💰 Prize claimed!', 'success')
-      addLog({ round: Number(gameState?.round ?? 0), message: '💰 Prize claimed!', type: 'system', txHash })
+      showToast('Prize claimed!', 'success')
+      addLog({ round: Number(gameState?.round ?? 0), message: 'Prize claimed!', type: 'system', txHash })
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Unknown error'
       showToast(`Claim failed: ${msg.slice(0, 60)}`, 'error')
@@ -458,8 +526,14 @@ export function useArena() {
 
   const myPlayer = players.find(p => p.addr.toLowerCase() === address?.toLowerCase()) ?? null
   const isInArena = myPlayer?.status === PlayerStatus.ACTIVE
+  const isEliminated = myPlayer?.status === PlayerStatus.DEAD
   const hasActed = myAction !== Action.NONE
-  const showJoinButton = !isInArena && joinStep === 'idle'
+  const showJoinButton = !isInArena && !isEliminated && joinStep === 'idle'
+
+  // Compute attack target client-side (lowest HP active non-self player)
+  const attackTarget = players
+    .filter(p => p.status === PlayerStatus.ACTIVE && p.addr.toLowerCase() !== address?.toLowerCase())
+    .sort((a, b) => Number(a.health) - Number(b.health))[0]?.addr ?? null
 
   return {
     gameState,
@@ -468,6 +542,7 @@ export function useArena() {
     myPlayer,
     myAction,
     isInArena,
+    isEliminated,
     hasActed,
     showJoinButton,
     pendingActions,
@@ -480,6 +555,10 @@ export function useArena() {
     lastRoundMs,
     prizeAmounts,
     hasClaimed,
+    resolvedTxHashes,
+    txStatus,
+    txHash,
+    attackTarget,
     joinAndAuthorize,
     submitAction,
     resolveRound,

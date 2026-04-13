@@ -1,16 +1,19 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-/// @title ParallelArena
-/// @notice Real-time onchain battle game demonstrating Monad's parallel execution.
-///         Players pay an entry fee, fight over 5 rounds, top 3 survivors claim the prize pool.
-///         Supports human players (EIP-712 gasless permits) and registered AI agents.
-///
-/// Parallel execution proof:
-///   submitAction() / submitActionWithPermit() write ONLY to roundActions[round][player].
-///   N players submitting simultaneously = N independent writes = Monad parallelises them.
-///   resolveRound() is the single sequential step — one tx processes everything.
-contract ParallelArena {
+/// @title ParallelArenaV2
+/// @notice Upgraded battle game contract with:
+///   - Mutable game params (owner-configurable without redeploy)
+///   - Mutable relayer address (operator rotation without redeploy)
+///   - 7-day prize claim window before reset is allowed
+///   - Emergency reset override for owner
+///   - Paginated leaderboard getter (O(page) instead of O(all))
+///   - O(1) allTimeParticipant membership check
+///   - O(n+defCount) defender flagging (eliminates inner nested loop)
+///   - Consecutive heal penalty: 20→10→5 HP after 2/4 consecutive heals
+///   - 2-second resolve cooldown after deadline (MEV sandwich mitigation)
+///   - block.prevrandao salt in target selection (unpredictable ordering)
+contract ParallelArenaV2 {
 
     // ============================================================
     // TYPES
@@ -29,7 +32,8 @@ contract ParallelArena {
         PlayerStatus status;
         uint256 roundsPlayed;
         uint256 kills;
-        uint256 rank;           // final rank (1 = winner); 0 = not ranked yet
+        uint256 rank;
+        uint256 consecutiveHeals; // tracks heal streaks for diminishing returns
     }
 
     struct RoundResult {
@@ -43,38 +47,52 @@ contract ParallelArena {
     }
 
     struct AgentInfo {
-        address owner;           // human who registered this agent
+        address owner;
         AgentStrategy strategy;
-        uint256 balance;         // deposited MON to pay entry fees
-        bool active;             // owner can pause
+        uint256 balance;
+        bool active;
         uint256 gamesPlayed;
         uint256 totalKills;
         uint256 topThreeFinishes;
     }
 
+    struct PlayerStats {
+        uint32 gamesPlayed;
+        uint32 wins;
+        uint32 kills;
+        uint32 totalDamage;
+    }
+
     // ============================================================
-    // CONSTANTS
+    // MUTABLE GAME PARAMS (owner-settable)
     // ============================================================
 
-    uint256 public constant ROUND_DURATION  = 30 seconds;
-    uint256 public constant MAX_PLAYERS     = 20;
-    uint256 public constant MAX_ROUNDS      = 5;
+    uint256 public ROUND_DURATION;
+    uint256 public MAX_PLAYERS;
+    uint256 public MAX_ROUNDS;
+    uint256 public ENTRY_FEE;
+
     uint256 public constant STARTING_HEALTH = 100;
-    uint256 public constant ENTRY_FEE       = 0.01 ether;
 
-    // Prize split basis points (out of 10000)
-    uint256 public constant PRIZE_FIRST  = 5000; // 50%
-    uint256 public constant PRIZE_SECOND = 3000; // 30%
-    uint256 public constant PRIZE_THIRD  = 2000; // 20%
+    // Prize split basis points
+    uint256 public constant PRIZE_FIRST  = 5000;
+    uint256 public constant PRIZE_SECOND = 3000;
+    uint256 public constant PRIZE_THIRD  = 2000;
 
-    // Agent economics
-    uint256 public constant AGENT_CREATION_FEE = 0.05 ether; // one-time registration
-    uint256 public constant AGENT_ROUND_FEE    = 0.001 ether; // per round played by agent
-
-    // Fee split on agent round fee: 50% resolver, 40% relayer, 10% treasury
+    // Agent economics (not user-facing, keep constant)
+    uint256 public constant AGENT_CREATION_FEE = 0.05 ether;
+    uint256 public constant AGENT_ROUND_FEE    = 0.001 ether;
     uint256 public constant RESOLVER_FEE_SHARE = 50;
     uint256 public constant RELAYER_FEE_SHARE  = 40;
-    // remaining 10% stays as treasury
+
+    // 7-day window: winners must claim before owner can reset
+    uint256 public constant CLAIM_WINDOW = 7 days;
+
+    // 2s MEV mitigation: resolver must wait 2 seconds after deadline before calling resolveRound
+    uint256 public constant RESOLVE_COOLDOWN = 2 seconds;
+
+    // Diminishing heal amounts: index = min(consecutiveHeals, 2)
+    uint256[3] private HEAL_AMOUNTS = [uint256(20), 10, 5];
 
     // ============================================================
     // STORAGE — Game
@@ -84,22 +102,21 @@ contract ParallelArena {
     uint256 public roundDeadline;
     GamePhase public phase;
     uint256 public prizePool;
+    uint256 public gameEndedAt; // timestamp when _endGame() was called
 
     mapping(address => Player) public players;
     address[] public playerList;
     uint256 public activePlayerCount;
 
-    // Top-3 finishers in order [0]=1st, [1]=2nd, [2]=3rd
     address[3] public winners;
     mapping(address => bool) public prizeClaimed;
 
-    // round => player => action (PARALLEL-SAFE)
     mapping(uint256 => mapping(address => Action)) public roundActions;
     mapping(uint256 => bool) public roundResolved;
     mapping(uint256 => RoundResult) public roundResults;
 
     // ============================================================
-    // STORAGE — Session keys (kept for backwards compat)
+    // STORAGE — Session keys
     // ============================================================
 
     mapping(address => address) public sessionKeys;
@@ -107,7 +124,7 @@ contract ParallelArena {
     mapping(address => uint256) public sessionKeyExpiry;
 
     // ============================================================
-    // STORAGE — EIP-712 permits
+    // STORAGE — EIP-712
     // ============================================================
 
     bytes32 public immutable DOMAIN_SEPARATOR;
@@ -120,40 +137,31 @@ contract ParallelArena {
     mapping(address => uint256) public nonces;
 
     // ============================================================
-    // STORAGE — Cross-game player stats (leaderboard)
+    // STORAGE — Leaderboard
     // ============================================================
-
-    struct PlayerStats {
-        uint32 gamesPlayed;
-        uint32 wins;        // top-3 finishes
-        uint32 kills;
-        uint32 totalDamage; // cumulative damage dealt
-    }
 
     mapping(address => PlayerStats) public playerStats;
-    address[] public allTimeParticipants; // ordered list for leaderboard iteration
+    address[] public allTimeParticipants;
+    mapping(address => bool) public isAllTimeParticipant; // O(1) membership check
 
     // ============================================================
-    // STORAGE — Agent registry
+    // STORAGE — Agents
     // ============================================================
 
-    mapping(address => AgentInfo) public agentInfo;  // agentAddress => info
-    mapping(address => address)   public ownerAgent; // owner => agentAddress
+    mapping(address => AgentInfo) public agentInfo;
+    mapping(address => address)   public ownerAgent;
     address[] public agentList;
     mapping(address => bool) public isRegisteredAgent;
 
     // ============================================================
-    // STORAGE — Fee pools
+    // STORAGE — Fees / Ownership
     // ============================================================
 
-    address public immutable relayerAddress; // relayer wallet, set in constructor
-    address public immutable owner;          // deployer — receives treasury share
+    address public relayerAddress; // mutable — owner can rotate
+    address public immutable owner;
 
-    // Accumulated claimable rewards (not part of prizePool)
     mapping(address => uint256) public pendingRewards;
     uint256 public treasuryBalance;
-
-    // Per-round: track last resolver for reward
     mapping(uint256 => address) public roundResolver;
 
     // ============================================================
@@ -170,16 +178,16 @@ contract ParallelArena {
     event GameEnded(address[3] winners, uint256 prizePool);
     event PrizeClaimed(address indexed winner, uint256 rank, uint256 amount);
     event GameReset(uint256 newRound);
-
+    event AttackMissed(address indexed attacker, uint256 round);
     event SessionKeyAuthorized(address indexed player, address indexed sessionKey, uint256 expiresAt);
     event SessionKeyRevoked(address indexed player, address indexed sessionKey);
-
     event AgentRegistered(address indexed owner, address indexed agentAddress, uint8 strategy, uint256 initialBalance);
     event AgentDeposited(address indexed agentAddress, uint256 amount);
     event AgentDeactivated(address indexed agentAddress);
     event AgentActivated(address indexed agentAddress);
     event RewardClaimed(address indexed recipient, uint256 amount);
-    event AttackMissed(address indexed attacker, uint256 round);
+    event ParamUpdated(string param, uint256 newValue);
+    event RelayerUpdated(address indexed newRelayer);
 
     // ============================================================
     // CONSTRUCTOR
@@ -189,9 +197,15 @@ contract ParallelArena {
         owner          = msg.sender;
         relayerAddress = _relayerAddress;
 
+        // Default params — owner can adjust between games
+        ROUND_DURATION = 30 seconds;
+        MAX_PLAYERS    = 20;
+        MAX_ROUNDS     = 5;
+        ENTRY_FEE      = 0.01 ether;
+
         DOMAIN_SEPARATOR = keccak256(abi.encode(
             keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
-            keccak256("ParallelArena"),
+            keccak256("ParallelArenaV2"),
             keccak256("1"),
             block.chainid,
             address(this)
@@ -215,6 +229,53 @@ contract ParallelArena {
     modifier gameActive() {
         require(phase == GamePhase.ACTIVE || phase == GamePhase.WAITING, "Game has ended");
         _;
+    }
+
+    // ============================================================
+    // OWNER ADMIN — mutable params
+    // ============================================================
+
+    /// @notice Update ROUND_DURATION. Only effective for future rounds.
+    function setRoundDuration(uint256 newDuration) external onlyOwner {
+        require(newDuration >= 10 seconds && newDuration <= 300 seconds, "Out of range");
+        require(phase == GamePhase.WAITING || phase == GamePhase.ENDED, "Game in progress");
+        ROUND_DURATION = newDuration;
+        emit ParamUpdated("ROUND_DURATION", newDuration);
+    }
+
+    function setMaxPlayers(uint256 newMax) external onlyOwner {
+        require(newMax >= 2 && newMax <= 100, "Out of range");
+        require(phase == GamePhase.WAITING || phase == GamePhase.ENDED, "Game in progress");
+        MAX_PLAYERS = newMax;
+        emit ParamUpdated("MAX_PLAYERS", newMax);
+    }
+
+    function setMaxRounds(uint256 newMax) external onlyOwner {
+        require(newMax >= 1 && newMax <= 20, "Out of range");
+        require(phase == GamePhase.WAITING || phase == GamePhase.ENDED, "Game in progress");
+        MAX_ROUNDS = newMax;
+        emit ParamUpdated("MAX_ROUNDS", newMax);
+    }
+
+    function setEntryFee(uint256 newFee) external onlyOwner {
+        require(newFee <= 1 ether, "Fee too high");
+        require(phase == GamePhase.WAITING || phase == GamePhase.ENDED, "Game in progress");
+        ENTRY_FEE = newFee;
+        emit ParamUpdated("ENTRY_FEE", newFee);
+    }
+
+    /// @notice Rotate the relayer wallet without redeploying.
+    ///         Critical for key rotation if relayer key is compromised.
+    function setRelayerAddress(address newRelayer) external onlyOwner {
+        require(newRelayer != address(0), "Zero address");
+        relayerAddress = newRelayer;
+        emit RelayerUpdated(newRelayer);
+    }
+
+    /// @notice Emergency reset: bypass the 7-day claim window.
+    ///         Use only in case of stuck game / exploit. Forfeits unclaimed prizes.
+    function emergencyReset() external onlyOwner {
+        _resetGame();
     }
 
     // ============================================================
@@ -243,13 +304,15 @@ contract ParallelArena {
             status: PlayerStatus.ACTIVE,
             roundsPlayed: 0,
             kills: 0,
-            rank: 0
+            rank: 0,
+            consecutiveHeals: 0
         });
         playerList.push(msg.sender);
         activePlayerCount++;
 
-        // Track all-time participants for leaderboard (first join only)
-        if (playerStats[msg.sender].gamesPlayed == 0 && !_isAllTimeParticipant(msg.sender)) {
+        // O(1) all-time participant tracking
+        if (!isAllTimeParticipant[msg.sender]) {
+            isAllTimeParticipant[msg.sender] = true;
             allTimeParticipants.push(msg.sender);
         }
 
@@ -265,9 +328,6 @@ contract ParallelArena {
     // AGENT REGISTRY
     // ============================================================
 
-    /// @notice Register an AI agent. Caller is the owner, `agentAddress` is the EOA the
-    ///         runner uses to sign permits. Must pay AGENT_CREATION_FEE + initial balance.
-    ///         Initial balance = msg.value - AGENT_CREATION_FEE; used for entry fees.
     function registerAgent(address agentAddress, uint8 strategy) external payable {
         require(msg.value >= AGENT_CREATION_FEE, "Insufficient creation fee");
         require(strategy <= uint8(AgentStrategy.ADAPTIVE), "Invalid strategy");
@@ -277,18 +337,12 @@ contract ParallelArena {
         require(agentAddress != msg.sender, "Agent must be different from owner");
 
         uint256 initialBalance = msg.value - AGENT_CREATION_FEE;
-
-        // Split creation fee: 50% resolver pool, 40% relayer, 10% treasury
         uint256 resolverShare = AGENT_CREATION_FEE * 50 / 100;
         uint256 relayerShare  = AGENT_CREATION_FEE * 40 / 100;
         uint256 treasuryShare = AGENT_CREATION_FEE - resolverShare - relayerShare;
 
-        // Relayer and treasury accumulate; resolver pool is distributed on resolve
-        pendingRewards[relayerAddress] += relayerShare;
+        pendingRewards[relayerAddress] += relayerShare + resolverShare;
         treasuryBalance += treasuryShare;
-        // resolverShare goes into a shared pool distributed across round resolvers
-        // For simplicity: relayer gets resolverShare too (demo)
-        pendingRewards[relayerAddress] += resolverShare;
 
         agentInfo[agentAddress] = AgentInfo({
             owner: msg.sender,
@@ -299,19 +353,17 @@ contract ParallelArena {
             totalKills: 0,
             topThreeFinishes: 0
         });
-        ownerAgent[msg.sender]     = agentAddress;
+        ownerAgent[msg.sender]          = agentAddress;
         isRegisteredAgent[agentAddress] = true;
         agentList.push(agentAddress);
 
         emit AgentRegistered(msg.sender, agentAddress, strategy, initialBalance);
     }
 
-    /// @notice Top up an agent's playing balance (for entry fees).
     function depositAgent(address agentAddress) external payable {
         require(isRegisteredAgent[agentAddress], "Not a registered agent");
         require(
-            agentInfo[agentAddress].owner == msg.sender ||
-            msg.sender == agentAddress,
+            agentInfo[agentAddress].owner == msg.sender || msg.sender == agentAddress,
             "Not your agent"
         );
         require(msg.value > 0, "No value sent");
@@ -319,7 +371,6 @@ contract ParallelArena {
         emit AgentDeposited(agentAddress, msg.value);
     }
 
-    /// @notice Pause agent (owner only).
     function deactivateAgent() external {
         address agentAddress = ownerAgent[msg.sender];
         require(agentAddress != address(0), "No registered agent");
@@ -327,7 +378,6 @@ contract ParallelArena {
         emit AgentDeactivated(agentAddress);
     }
 
-    /// @notice Resume agent (owner only).
     function activateAgent() external {
         address agentAddress = ownerAgent[msg.sender];
         require(agentAddress != address(0), "No registered agent");
@@ -335,8 +385,6 @@ contract ParallelArena {
         emit AgentActivated(agentAddress);
     }
 
-    /// @notice Agent runner calls this to spend from agent balance for entry fee.
-    ///         Only the relayer (trusted runner) may call this.
     function agentJoinArena(address agentAddress) external {
         require(msg.sender == relayerAddress, "Only relayer");
         require(isRegisteredAgent[agentAddress], "Not registered");
@@ -348,7 +396,7 @@ contract ParallelArena {
         require(players[agentAddress].status != PlayerStatus.ACTIVE, "Already in arena");
 
         info.balance -= ENTRY_FEE;
-        prizePool += ENTRY_FEE;
+        prizePool    += ENTRY_FEE;
 
         uint256 seed = uint256(keccak256(abi.encodePacked(
             agentAddress, block.timestamp, playerList.length
@@ -364,10 +412,16 @@ contract ParallelArena {
             status: PlayerStatus.ACTIVE,
             roundsPlayed: 0,
             kills: 0,
-            rank: 0
+            rank: 0,
+            consecutiveHeals: 0
         });
         playerList.push(agentAddress);
         activePlayerCount++;
+
+        if (!isAllTimeParticipant[agentAddress]) {
+            isAllTimeParticipant[agentAddress] = true;
+            allTimeParticipants.push(agentAddress);
+        }
 
         if (activePlayerCount == 1) {
             phase = GamePhase.ACTIVE;
@@ -378,7 +432,7 @@ contract ParallelArena {
     }
 
     // ============================================================
-    // SESSION KEY MANAGEMENT (kept for direct-wallet flows)
+    // SESSION KEY MANAGEMENT
     // ============================================================
 
     function authorizeSessionKey(address sessionKey, uint256 expiresAt) external {
@@ -429,15 +483,16 @@ contract ParallelArena {
     }
 
     // ============================================================
-    // RESOLVE ROUND — pays resolver reward from pending fees
+    // RESOLVE ROUND
     // ============================================================
 
     function resolveRound() external {
         require(!roundResolved[currentRound], "Already resolved");
         require(phase == GamePhase.ACTIVE, "Game not active");
+        // 2-second MEV mitigation: resolver must wait after deadline
         require(
-            block.timestamp >= roundDeadline || _allPlayersActed(),
-            "Round not ready: wait for deadline or all players to act"
+            (block.timestamp >= roundDeadline + RESOLVE_COOLDOWN) || _allPlayersActed(),
+            "Round not ready"
         );
 
         uint256 round = currentRound;
@@ -452,32 +507,30 @@ contract ParallelArena {
         address[] memory activePlayers = _getActivePlayers();
         uint256 n = activePlayers.length;
 
+        // --- Use prevrandao as a salt to randomise traversal order ---
+        // This prevents any single player knowing exactly who will be targeted
+        // in advance by observing the mempool, since prevrandao is only known
+        // once the block is proposed.
+        uint256 randSalt = uint256(block.prevrandao);
+
         address[] memory attackers = new address[](n);
-        address[] memory defenders = new address[](n);
         address[] memory healers   = new address[](n);
-        uint256 atkCount; uint256 defCount; uint256 healCount;
+        uint256 atkCount; uint256 healCount;
+
+        // Single-pass O(n+defCount) defender flag array instead of nested loop
+        bool[] memory isDefending = new bool[](n);
 
         for (uint256 i = 0; i < n; i++) {
             Action a = roundActions[round][activePlayers[i]];
-            if (a == Action.ATTACK) { attackers[atkCount++] = activePlayers[i]; actionsProcessed++; }
-            if (a == Action.DEFEND) { defenders[defCount++] = activePlayers[i]; actionsProcessed++; }
-            if (a == Action.HEAL)   { healers[healCount++]  = activePlayers[i]; actionsProcessed++; }
+            if (a == Action.ATTACK)  { attackers[atkCount++] = activePlayers[i]; actionsProcessed++; }
+            else if (a == Action.DEFEND) { isDefending[i] = true; actionsProcessed++; defendersProtected++; emit PlayerDefended(activePlayers[i]); }
+            else if (a == Action.HEAL)   { healers[healCount++]  = activePlayers[i]; actionsProcessed++; }
         }
 
-        // Defender flags
-        bool[] memory isDefending = new bool[](n);
-        for (uint256 i = 0; i < defCount; i++) {
-            for (uint256 j = 0; j < n; j++) {
-                if (activePlayers[j] == defenders[i]) { isDefending[j] = true; break; }
-            }
-            defendersProtected++;
-            emit PlayerDefended(defenders[i]);
-        }
-
-        // Resolve attacks
+        // Resolve attacks with prevrandao-salted target selection
         for (uint256 i = 0; i < atkCount; i++) {
             address atk = attackers[i];
-            (address target,) = _findTarget(activePlayers, n, atk, isDefending);
+            (address target,) = _findTarget(activePlayers, n, atk, isDefending, randSalt ^ uint256(uint160(atk)));
             if (target == address(0)) {
                 emit AttackMissed(atk, round);
                 continue;
@@ -499,17 +552,29 @@ contract ParallelArena {
             emit PlayerAttacked(atk, target, finalDmg);
         }
 
-        // Resolve heals
+        // Resolve heals with diminishing returns
         for (uint256 i = 0; i < healCount; i++) {
             address h = healers[i];
             if (players[h].status != PlayerStatus.ACTIVE) continue;
-            uint256 newHealth = players[h].health + 20;
+
+            uint256 streakIdx = players[h].consecutiveHeals >= 2 ? 2 : players[h].consecutiveHeals;
+            uint256 healAmt = HEAL_AMOUNTS[streakIdx];
+            uint256 newHealth = players[h].health + healAmt;
             players[h].health = newHealth > STARTING_HEALTH ? STARTING_HEALTH : newHealth;
+            players[h].consecutiveHeals++;
             healsApplied++;
-            emit PlayerHealed(h, 20);
+            emit PlayerHealed(h, healAmt);
         }
 
-        // Pay resolver a bounty from agent round fees if agents participated
+        // Reset consecutive heal counter for non-healers
+        for (uint256 i = 0; i < n; i++) {
+            address p = activePlayers[i];
+            if (roundActions[round][p] != Action.HEAL && players[p].consecutiveHeals > 0) {
+                players[p].consecutiveHeals = 0;
+            }
+        }
+
+        // Resolver bounty from agent round fees
         uint256 resolverBounty = _calcResolverBounty(activePlayers, n);
         if (resolverBounty > 0) {
             pendingRewards[msg.sender] += resolverBounty;
@@ -530,11 +595,7 @@ contract ParallelArena {
         currentRound++;
         roundDeadline = block.timestamp + ROUND_DURATION;
 
-        // End game when MAX_ROUNDS completed OR ALL players eliminated
-        bool maxRoundsReached = currentRound >= MAX_ROUNDS;
-        bool allEliminated    = activePlayerCount == 0;
-
-        if (maxRoundsReached || allEliminated) {
+        if (currentRound >= MAX_ROUNDS || activePlayerCount == 0) {
             _endGame();
         }
     }
@@ -549,12 +610,19 @@ contract ParallelArena {
         _payPrize(msg.sender);
     }
 
+    function resetGame() external {
+        require(phase == GamePhase.ENDED, "Game not ended");
+        require(
+            block.timestamp >= gameEndedAt + CLAIM_WINDOW || msg.sender == owner,
+            "Claim window still open"
+        );
+        _resetGame();
+    }
+
     // ============================================================
     // EIP-712 PERMIT FUNCTIONS
     // ============================================================
 
-    /// @notice Submit an action on behalf of a player who signed an ActionPermit.
-    ///         Callable by anyone (the relayer). Player pays no gas.
     function submitActionWithPermit(
         address player,
         uint8   action,
@@ -580,15 +648,12 @@ contract ParallelArena {
 
         nonces[player]++;
 
-        // If this is a registered agent, deduct round fee and reward relayer+resolver
         if (isRegisteredAgent[player] && agentInfo[player].balance >= AGENT_ROUND_FEE) {
             agentInfo[player].balance -= AGENT_ROUND_FEE;
             uint256 resolverShare = AGENT_ROUND_FEE * RESOLVER_FEE_SHARE / 100;
             uint256 relayerShare  = AGENT_ROUND_FEE * RELAYER_FEE_SHARE  / 100;
             uint256 treasury      = AGENT_ROUND_FEE - resolverShare - relayerShare;
-            // Resolver of this round gets credited when resolveRound() is called;
-            // store in a per-round accumulator keyed by ZERO until resolve time
-            pendingRewards[address(0)] += resolverShare; // reserved for resolver
+            pendingRewards[address(0)] += resolverShare;
             pendingRewards[relayerAddress] += relayerShare;
             treasuryBalance += treasury;
         }
@@ -598,7 +663,6 @@ contract ParallelArena {
         emit ActionSubmitted(player, Action(action), currentRound);
     }
 
-    /// @notice Claim prize on behalf of a player who signed a ClaimPermit.
     function claimPrizeWithPermit(
         address player,
         uint256 nonce,
@@ -607,10 +671,10 @@ contract ParallelArena {
         bytes32 r,
         bytes32 s
     ) external {
-        require(block.timestamp <= deadline, "Permit expired");
-        require(phase == GamePhase.ENDED,    "Game not ended");
-        require(!prizeClaimed[player],       "Already claimed");
-        require(nonces[player] == nonce,     "Invalid nonce");
+        require(phase == GamePhase.ENDED,        "Game not ended");
+        require(block.timestamp <= deadline,      "Permit expired");
+        require(nonces[player] == nonce,          "Invalid nonce");
+        require(!prizeClaimed[player],            "Already claimed");
 
         bytes32 structHash = keccak256(abi.encode(CLAIM_PERMIT_TYPEHASH, player, nonce, deadline));
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
@@ -625,76 +689,53 @@ contract ParallelArena {
     // REWARD WITHDRAWAL
     // ============================================================
 
-    /// @notice Claim accumulated rewards (resolver bounties, relayer fees, etc.)
-    function withdrawRewards() external {
+    function claimReward() external {
         uint256 amount = pendingRewards[msg.sender];
-        require(amount > 0, "No rewards");
+        require(amount > 0, "Nothing to claim");
         pendingRewards[msg.sender] = 0;
         (bool ok,) = msg.sender.call{value: amount}("");
         require(ok, "Transfer failed");
         emit RewardClaimed(msg.sender, amount);
     }
 
-    /// @notice Owner withdraws protocol treasury.
-    function withdrawTreasury(address to) external onlyOwner {
+    function withdrawTreasury(address recipient) external onlyOwner {
+        require(recipient != address(0), "Zero address");
         uint256 amount = treasuryBalance;
-        require(amount > 0, "Empty treasury");
         treasuryBalance = 0;
-        (bool ok,) = to.call{value: amount}("");
+        (bool ok,) = recipient.call{value: amount}("");
         require(ok, "Transfer failed");
     }
 
     // ============================================================
-    // GAME RESET
+    // VIEW FUNCTIONS
     // ============================================================
 
-    function resetGame() external {
-        require(phase == GamePhase.ENDED, "Game not ended");
-        _resetGame();
-    }
-
-    // ============================================================
-    // READ FUNCTIONS
-    // ============================================================
-
-    function getGameState() external view returns (
-        uint256 round, uint256 deadline, uint256 activePlayers,
-        uint256 totalPlayers, bool resolved
-    ) {
-        return (currentRound, roundDeadline, activePlayerCount, playerList.length, roundResolved[currentRound]);
+    struct FullGameState {
+        uint256 round;
+        uint256 deadline;
+        uint256 activePlayers;
+        uint256 totalPlayers;
+        bool    resolved;
+        uint256 pool;
+        uint256 maxRounds;
+        GamePhase gamePhase;
+        address[3] topWinners;
     }
 
     function getFullGameState() external view returns (
         uint256 round, uint256 deadline, uint256 activePlayers, uint256 totalPlayers,
-        bool resolved, uint256 pool, uint256 maxRounds, uint8 gamePhase,
+        bool resolved, uint256 pool, uint256 maxRounds, GamePhase gamePhase,
         address[3] memory topWinners
     ) {
-        return (
-            currentRound, roundDeadline, activePlayerCount, playerList.length,
-            roundResolved[currentRound], prizePool, MAX_ROUNDS, uint8(phase), winners
-        );
-    }
-
-    function getPlayer(address addr) external view returns (Player memory) {
-        return players[addr];
-    }
-
-    function getPlayerStats(address player) external view returns (PlayerStats memory) {
-        return playerStats[player];
-    }
-
-    function getAllTimeParticipants() external view returns (address[] memory) {
-        return allTimeParticipants;
-    }
-
-    /// @notice Batch-fetch stats for leaderboard rendering (avoids N RPC calls).
-    function getLeaderboard() external view returns (address[] memory addrs, PlayerStats[] memory stats) {
-        uint256 n = allTimeParticipants.length;
-        addrs = allTimeParticipants;
-        stats = new PlayerStats[](n);
-        for (uint256 i = 0; i < n; i++) {
-            stats[i] = playerStats[allTimeParticipants[i]];
-        }
+        round         = currentRound;
+        deadline      = roundDeadline;
+        activePlayers = activePlayerCount;
+        totalPlayers  = playerList.length;
+        resolved      = roundResolved[currentRound];
+        pool          = prizePool;
+        maxRounds     = MAX_ROUNDS;
+        gamePhase     = phase;
+        topWinners    = winners;
     }
 
     function getAllPlayers() external view returns (Player[] memory) {
@@ -703,10 +744,6 @@ contract ParallelArena {
             result[i] = players[playerList[i]];
         }
         return result;
-    }
-
-    function getMyAction(uint256 round) external view returns (Action) {
-        return roundActions[round][msg.sender];
     }
 
     function getActionFor(uint256 round, address player) external view returns (Action) {
@@ -730,17 +767,53 @@ contract ParallelArena {
         thirdPrize  = (prizePool * PRIZE_THIRD)  / 10000;
     }
 
-    function entryFee() external pure returns (uint256) { return ENTRY_FEE; }
-
+    function entryFee() external view returns (uint256) { return ENTRY_FEE; }
     function getWinners() external view returns (address[3] memory) { return winners; }
 
     function getAgentInfo(address agentAddress) external view returns (AgentInfo memory) {
         return agentInfo[agentAddress];
     }
 
-    function getMyAgent() external view returns (address agentAddress, AgentInfo memory info) {
-        agentAddress = ownerAgent[msg.sender];
-        if (agentAddress != address(0)) info = agentInfo[agentAddress];
+    function getPlayerStats(address player) external view returns (PlayerStats memory) {
+        return playerStats[player];
+    }
+
+    function getAllTimeParticipants() external view returns (address[] memory) {
+        return allTimeParticipants;
+    }
+
+    /// @notice Paginated leaderboard — avoids O(all) unbounded gas.
+    ///         Returns (addresses, stats, total) for a page.
+    function getLeaderboardPage(uint256 offset, uint256 limit)
+        external view
+        returns (address[] memory addrs, PlayerStats[] memory stats, uint256 total)
+    {
+        total = allTimeParticipants.length;
+        uint256 end = offset + limit;
+        if (end > total) end = total;
+        uint256 count = offset < total ? end - offset : 0;
+
+        addrs = new address[](count);
+        stats = new PlayerStats[](count);
+
+        for (uint256 i = 0; i < count; i++) {
+            addrs[i] = allTimeParticipants[offset + i];
+            stats[i] = playerStats[addrs[i]];
+        }
+    }
+
+    /// @notice Convenience: return ALL participants with stats (use paginated version for large sets).
+    function getLeaderboard()
+        external view
+        returns (address[] memory addrs, PlayerStats[] memory stats)
+    {
+        uint256 len = allTimeParticipants.length;
+        addrs = new address[](len);
+        stats = new PlayerStats[](len);
+        for (uint256 i = 0; i < len; i++) {
+            addrs[i] = allTimeParticipants[i];
+            stats[i] = playerStats[addrs[i]];
+        }
     }
 
     function getAllAgents() external view returns (address[] memory addrs, AgentInfo[] memory infos) {
@@ -751,16 +824,13 @@ contract ParallelArena {
         }
     }
 
+    function sessionKeyExpiry_(address player) external view returns (uint256) {
+        return sessionKeyExpiry[player];
+    }
+
     // ============================================================
     // INTERNAL
     // ============================================================
-
-    function _isAllTimeParticipant(address player) internal view returns (bool) {
-        for (uint256 i = 0; i < allTimeParticipants.length; i++) {
-            if (allTimeParticipants[i] == player) return true;
-        }
-        return false;
-    }
 
     function _getActivePlayers() internal view returns (address[] memory) {
         uint256 count = 0;
@@ -788,36 +858,39 @@ contract ParallelArena {
         return true;
     }
 
+    /// @dev Target selection with prevrandao salt — picks lowest-HP non-defending
+    ///      player among those starting from a randomised offset into the array.
+    ///      Lowest-HP priority is preserved (fairness), but tie-breaking is random.
     function _findTarget(
         address[] memory activePlayers,
         uint256 n,
         address attacker,
-        bool[] memory isDefending
+        bool[] memory isDefending,
+        uint256 salt
     ) internal view returns (address target, uint256 targetIdx) {
         target = address(0);
         targetIdx = type(uint256).max;
         uint256 lowestHp = type(uint256).max;
-        for (uint256 i = 0; i < n; i++) {
+        // Randomise starting index to break ties non-deterministically
+        uint256 startIdx = n > 0 ? salt % n : 0;
+
+        for (uint256 k = 0; k < n; k++) {
+            uint256 i = (startIdx + k) % n;
             address p = activePlayers[i];
             if (p == attacker) continue;
             if (players[p].status != PlayerStatus.ACTIVE) continue;
             if (isDefending[i]) continue;
             if (players[p].health < lowestHp) {
-                lowestHp = players[p].health;
-                target = p;
+                lowestHp  = players[p].health;
+                target    = p;
                 targetIdx = i;
             }
         }
     }
 
-    /// @dev Count how many agent players are in the active set and return resolver bounty.
     function _calcResolverBounty(address[] memory activePlayers, uint256 n)
-        internal
-        view
-        returns (uint256 bounty)
+        internal view returns (uint256 bounty)
     {
-        // Take the resolver's share from the per-address(0) accumulator
-        // We do this by counting agents who acted this round
         uint256 agentCount = 0;
         for (uint256 i = 0; i < n; i++) {
             if (isRegisteredAgent[activePlayers[i]] &&
@@ -825,20 +898,19 @@ contract ParallelArena {
                 agentCount++;
             }
         }
-        // bounty = agentCount * AGENT_ROUND_FEE * RESOLVER_FEE_SHARE / 100
         bounty = agentCount * AGENT_ROUND_FEE * RESOLVER_FEE_SHARE / 100;
-        // But cap at what's actually pending in address(0) bucket (to avoid overcount)
         uint256 cap = pendingRewards[address(0)];
         if (bounty > cap) bounty = cap;
     }
 
     function _endGame() internal {
-        phase = GamePhase.ENDED;
+        phase       = GamePhase.ENDED;
+        gameEndedAt = block.timestamp;
 
-        // Rank survivors by health descending
         address[] memory alive = _getActivePlayers();
         uint256 aliveCount = alive.length;
 
+        // Sort survivors by health descending (bubble sort — n ≤ MAX_PLAYERS)
         for (uint256 i = 0; i < aliveCount; i++) {
             for (uint256 j = i + 1; j < aliveCount; j++) {
                 if (players[alive[j]].health > players[alive[i]].health) {
@@ -851,7 +923,7 @@ contract ParallelArena {
             winners[i] = alive[i];
         }
 
-        // Update agent stats and cross-game playerStats
+        // Update cross-game stats
         for (uint256 i = 0; i < playerList.length; i++) {
             address p = playerList[i];
             if (isRegisteredAgent[p]) {
@@ -861,7 +933,6 @@ contract ParallelArena {
                     if (winners[j] == p) { agentInfo[p].topThreeFinishes++; break; }
                 }
             }
-            // Cross-game leaderboard stats (all players, human and agent)
             playerStats[p].gamesPlayed++;
             playerStats[p].kills += uint32(players[p].kills);
             for (uint256 j = 0; j < 3; j++) {
@@ -869,9 +940,7 @@ contract ParallelArena {
             }
         }
 
-        // Flush pending resolver pool to last resolver.
-        // Fall back to msg.sender if no resolver was recorded for the last round
-        // (e.g. game ended with no agent actions in final round).
+        // Flush resolver pool — fallback to msg.sender
         uint256 resolverPool = pendingRewards[address(0)];
         if (resolverPool > 0) {
             address lastResolver = currentRound > 0 ? roundResolver[currentRound - 1] : address(0);
@@ -913,20 +982,25 @@ contract ParallelArena {
                 delete sessionKeyExpiry[p];
             }
             delete players[p];
+            delete prizeClaimed[p];
         }
         delete playerList;
         delete winners;
 
-        for (uint256 i = 0; i < MAX_ROUNDS; i++) {
+        for (uint256 i = 0; i <= currentRound; i++) {
             delete roundResolved[i];
             delete roundResults[i];
+            delete roundResolver[i];
         }
 
         activePlayerCount = 0;
         currentRound      = 0;
         roundDeadline     = 0;
         prizePool         = 0;
+        gameEndedAt       = 0;
         phase             = GamePhase.WAITING;
         emit GameReset(0);
     }
+
+    receive() external payable {}
 }

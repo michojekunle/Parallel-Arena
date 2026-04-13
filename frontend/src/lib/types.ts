@@ -93,3 +93,19 @@ export interface PrizeAmounts {
 }
 
 export type JoinStep = 'idle' | 'joining' | 'done'
+
+// Replay
+export interface ReplayAttack {
+  attacker: `0x${string}`
+  target: `0x${string}`
+  damage: number
+}
+
+export interface ReplayFrame {
+  round: number
+  /** Health snapshot AFTER this round resolved */
+  playerHealths: Record<`0x${string}`, number>
+  attacks: ReplayAttack[]
+  deaths: `0x${string}`[]
+  heals: `0x${string}`[]
+}

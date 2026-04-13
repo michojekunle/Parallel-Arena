@@ -1,22 +1,46 @@
-import { createPublicClient, createWalletClient, http, parseGwei } from 'viem'
+import { createPublicClient, createWalletClient, http, fallback, parseGwei } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
-import { monadTestnet } from '@/lib/constants'
+import { monadTestnet, RPC_URLS } from '@/lib/constants'
 import { ABI, CONTRACT_ADDRESS } from '@/lib/contract'
 
 // Server-side only — never exposed to client.
-// Supports both RELAYER_PRIVATE_KEY (server-only) and NEXT_PUBLIC_RPC_URL (shared).
 const RELAYER_KEY = process.env.RELAYER_PRIVATE_KEY as `0x${string}`
-const RPC = process.env.NEXT_PUBLIC_RPC_URL || 'https://testnet-rpc.monad.xyz'
 
 const TX_TIMEOUT_MS = 25_000 // 25s — Next.js routes default to 30s limit
+
+// ---------------------------------------------------------------------------
+// In-process sliding-window rate limiter (10 req / 60s per IP)
+// ---------------------------------------------------------------------------
+const RATE_WINDOW_MS = 60_000
+const RATE_MAX = 10
+// Map is module-scoped — shared across requests in the same worker process.
+// Fine for a single-server deployment; use Redis for multi-instance.
+const rateBuckets = new Map<string, number[]>()
+
+function checkRateLimit(ip: string): boolean {
+  const now = Date.now()
+  const hits = (rateBuckets.get(ip) ?? []).filter(t => now - t < RATE_WINDOW_MS)
+  if (hits.length >= RATE_MAX) return false
+  rateBuckets.set(ip, [...hits, now])
+  return true
+}
+
+// Evict stale buckets every 5 minutes to prevent unbounded Map growth
+setInterval(() => {
+  const now = Date.now()
+  for (const [ip, hits] of rateBuckets) {
+    if (hits.every(t => now - t >= RATE_WINDOW_MS)) rateBuckets.delete(ip)
+  }
+}, 5 * 60 * 1000)
 
 function getClients() {
   if (!RELAYER_KEY) {
     throw new Error('RELAYER_PRIVATE_KEY not configured on server')
   }
-  const account    = privateKeyToAccount(RELAYER_KEY)
-  const walletClient = createWalletClient({ account, chain: monadTestnet, transport: http(RPC) })
-  const publicClient = createPublicClient({ chain: monadTestnet, transport: http(RPC) })
+  const transport = fallback(RPC_URLS.map(url => http(url, { timeout: 10_000 })))
+  const account = privateKeyToAccount(RELAYER_KEY)
+  const walletClient = createWalletClient({ account, chain: monadTestnet, transport })
+  const publicClient = createPublicClient({ chain: monadTestnet, transport })
   return { walletClient, publicClient, account }
 }
 
@@ -32,6 +56,12 @@ interface RelayBody {
 }
 
 export async function POST(request: Request): Promise<Response> {
+  // Rate limit by IP
+  const ip = request.headers.get('x-forwarded-for')?.split(',')[0].trim() ?? 'unknown'
+  if (!checkRateLimit(ip)) {
+    return Response.json({ error: 'Rate limit exceeded — try again in a minute' }, { status: 429 })
+  }
+
   try {
     const body = await request.json() as RelayBody
     const { type, player, nonce, deadline, v, r, s } = body
