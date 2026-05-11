@@ -50,3 +50,5 @@ skills-lock.json
 .npm-cache/
 .agents/
 .claude/
+
+dump.txt
