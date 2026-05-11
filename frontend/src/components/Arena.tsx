@@ -9,7 +9,7 @@ import { SpectatorPanel } from './SpectatorPanel'
 import { WalletConnect } from './WalletConnect'
 import { EndGameModal } from './EndGameModal'
 import { AgentPanel } from './AgentPanel'
-import { Guide } from './Guide'
+import { TourGuide } from './TourGuide'
 import { BackgroundMusic } from './BackgroundMusic'
 import { ParticleSystem } from './ParticleSystem'
 import { AttackEffect } from './AttackEffect'
@@ -19,6 +19,7 @@ import { useWallet } from '@/hooks/useWallet'
 import { Action, PlayerStatus, GamePhase } from '@/lib/types'
 import { formatEther } from 'viem'
 import { useState, useMemo, useEffect } from 'react'
+import { useChainId, useSwitchChain } from 'wagmi'
 
 export function Arena(): React.ReactElement {
   const {
@@ -45,16 +46,23 @@ export function Arena(): React.ReactElement {
     txStatus,
     txHash,
     attackTarget,
+    startVoteCount,
+    quorum,
+    hasVotedToStart,
     joinAndAuthorize,
     submitAction,
     resolveRound,
+    voteToStart,
     claimPrize,
     resetGame,
   } = useArena()
 
   const { isConnected, address } = useWallet()
+  const chainId = useChainId()
+  const { switchChain } = useSwitchChain()
+  const isWrongChain = isConnected && chainId !== 10143
   const [showAgents, setShowAgents] = useState(false)
-  const [isGuideOpen, setIsGuideOpen] = useState(false)
+  const [isTourOpen, setIsTourOpen] = useState(false)
   const [dismissedModal, setDismissedModal] = useState(false)
   const [isAttackHovered, setIsAttackHovered] = useState(false)
 
@@ -90,6 +98,7 @@ export function Arena(): React.ReactElement {
   }, [pendingActions])
 
   const isGameEnded = fullGameState?.gamePhase === GamePhase.ENDED
+  const isGameWaiting = fullGameState?.gamePhase === GamePhase.WAITING || !gameState
   const prizePool = fullGameState?.pool ?? 0n
   const maxRounds = fullGameState?.maxRounds ?? 5n
   const winners = fullGameState?.winners ?? ['0x0000000000000000000000000000000000000000', '0x0000000000000000000000000000000000000000', '0x0000000000000000000000000000000000000000'] as [`0x${string}`, `0x${string}`, `0x${string}`]
@@ -99,13 +108,40 @@ export function Arena(): React.ReactElement {
       {/* Ambient particle system + background effects */}
       <ParticleSystem />
 
+      {/* Wrong-chain overlay */}
+      {isWrongChain && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm">
+          <div className="border border-[#EE0000]/60 bg-black p-6 text-center max-w-sm w-full mx-4">
+            <div className="text-xs font-bold text-[#EE0000] uppercase tracking-widest mb-2">Wrong Network</div>
+            <div className="text-[11px] text-[#888] mb-5 font-mono leading-relaxed">
+              Parallel Arena runs on Monad Testnet (chain 10143).<br />
+              You are connected to chain {chainId}.
+            </div>
+            <button
+              onClick={() => switchChain({ chainId: 10143 })}
+              className="w-full py-2.5 text-[11px] font-bold uppercase tracking-widest border-2 border-white text-white hover:bg-white hover:text-black transition-all mb-3"
+            >
+              Switch to Monad Testnet
+            </button>
+            <a
+              href="https://faucet.monad.xyz"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="block text-[10px] text-[#555] hover:text-white transition-colors font-mono"
+            >
+              Need testnet MON? Get it from the faucet ↗
+            </a>
+          </div>
+        </div>
+      )}
+
       {/* Active visual effects */}
       {activeAttack && <AttackEffect attacker={activeAttack.attacker} target={activeAttack.target} isActive damage={activeAttack.damage} />}
       {activeHeal && <HealEffect target={activeHeal.target} isActive amount={activeHeal.amount} />}
       {activeDefend && <DefendEffect target={activeDefend.target} isActive />}
 
       <div className="scanline" />
-      <Guide isOpen={isGuideOpen} onClose={() => setIsGuideOpen(false)} />
+      <TourGuide forceOpen={isTourOpen} onClose={() => setIsTourOpen(false)} />
 
       <EndGameModal
         isOpen={isGameEnded && !dismissedModal}
@@ -155,18 +191,18 @@ export function Arena(): React.ReactElement {
       {/* Header */}
       <header className="border-b border-[#1a1a1a] px-4 sm:px-6 py-3 flex items-center justify-between sticky top-0 bg-black z-40">
         <div className="flex items-center gap-3 sm:gap-5 min-w-0">
-          <h1 className="text-sm font-bold tracking-tighter whitespace-nowrap cursor-pointer" onClick={() => setIsGuideOpen(true)}>
+          <h1 className="text-base lg:text-xl font-black tracking-tighter whitespace-nowrap cursor-pointer" onClick={() => setIsTourOpen(true)}>
             PARALLEL<span className="text-[#555] font-light ml-1 lowercase">arena</span>
           </h1>
           <button
-            onClick={() => setIsGuideOpen(true)}
-            className="hidden sm:block text-[9px] font-bold border border-white/20 px-2 py-0.5 hover:bg-white hover:text-black transition-all uppercase tracking-widest"
+            onClick={() => setIsTourOpen(true)}
+            className="hidden sm:block text-[10px] lg:text-xs font-bold border border-white/20 px-3 py-1 hover:bg-white hover:text-black transition-all uppercase tracking-widest"
           >
             HOW TO PLAY
           </button>
           <a
             href="/leaderboard"
-            className="hidden sm:block text-[9px] font-bold border border-[#333] text-[#555] px-2 py-0.5 hover:border-white hover:text-white transition-all uppercase tracking-widest"
+            className="hidden sm:block text-[10px] lg:text-xs font-bold border border-[#333] text-[#555] px-3 py-1 hover:border-white hover:text-white transition-all uppercase tracking-widest"
           >
             LEADERBOARD
           </a>
@@ -175,8 +211,8 @@ export function Arena(): React.ReactElement {
         <div className="flex items-center gap-2 sm:gap-4">
           {prizePool > 0n && (
             <div className="hidden sm:flex items-center gap-1.5 border border-[#FDBA74]/30 px-2 py-1">
-              <span className="text-[8px] text-[#555] uppercase tracking-widest">POOL</span>
-              <span className="text-[10px] font-bold font-mono text-[#FDBA74]">
+              <span className="text-[8px] lg:text-[10px] text-[#555] uppercase tracking-widest">POOL</span>
+              <span className="text-[10px] lg:text-sm font-bold font-mono text-[#FDBA74]">
                 {formatEther(prizePool)} MON
               </span>
             </div>
@@ -199,23 +235,23 @@ export function Arena(): React.ReactElement {
           {gameState && (
             <div className="flex items-center gap-2 sm:gap-4">
               <div className="text-center">
-                <div className="text-[9px] text-[#555] uppercase tracking-widest">RND</div>
-                <div className="text-xs font-bold font-mono">
+                <div className="text-[9px] lg:text-[11px] text-[#555] uppercase tracking-widest font-bold">RND</div>
+                <div className="text-xs lg:text-base font-bold font-mono">
                   {gameState.round.toString()}<span className="text-[#333]">/{maxRounds.toString()}</span>
                 </div>
               </div>
               <div className="text-center">
-                <div className="text-[9px] text-[#555] uppercase tracking-widest">TIME</div>
+                <div className="text-[9px] lg:text-[11px] text-[#555] uppercase tracking-widest font-bold">TIME</div>
                 <div
-                  className="text-xs font-bold tabular-nums font-mono"
+                  className="text-xs lg:text-base font-bold tabular-nums font-mono"
                   style={{ color: timeRemaining <= 10 ? '#EE0000' : '#fff' }}
                 >
                   {timeRemaining}s
                 </div>
               </div>
               <div className="hidden sm:block text-center">
-                <div className="text-[9px] text-[#555] uppercase tracking-widest">ALIVE</div>
-                <div className="text-xs font-bold font-mono">
+                <div className="text-[9px] lg:text-[11px] text-[#555] uppercase tracking-widest font-bold">ALIVE</div>
+                <div className="text-xs lg:text-base font-bold font-mono">
                   {gameState.activePlayers.toString()}<span className="text-[#333] mx-0.5">/</span>{gameState.totalPlayers.toString()}
                 </div>
               </div>
@@ -236,24 +272,102 @@ export function Arena(): React.ReactElement {
                 ACTIVE PLAYERS
               </span>
               <div className="flex items-center gap-3">
-                <span className="text-[9px] font-mono text-[#444]">
+                <span className="text-[9px] lg:text-[11px] font-mono text-[#444]">
                   {activePlayers.length} alive · {deadPlayers.length} out
                 </span>
               </div>
             </div>
 
-            {activePlayers.length === 0 && (
+            {/* WAITING phase lobby — show vote-to-start panel */}
+            {isGameWaiting && (
+              <div className="mb-6 border border-[#26D962]/20 bg-[#26D962]/5 p-4 lg:p-6">
+                <div className="flex items-center gap-2 mb-3">
+                  <div className="w-2 h-2 rounded-full bg-[#26D962] animate-pulse" />
+                  <span className="text-[10px] lg:text-xs font-bold text-[#26D962] uppercase tracking-widest">
+                    Waiting for Players
+                  </span>
+                </div>
+
+                {/* Vote progress bar */}
+                {quorum > 0 && (
+                  <div className="mb-4">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-[10px] lg:text-xs text-[#888] font-mono">
+                        {startVoteCount} / {quorum} players ready
+                      </span>
+                      <span className="text-[10px] lg:text-xs text-[#555] font-mono">
+                        {quorum} votes needed to start
+                      </span>
+                    </div>
+                    <div className="h-1.5 lg:h-2 bg-[#1a1a1a] rounded-sm overflow-hidden">
+                      <div
+                        className="h-full bg-[#26D962] rounded-sm transition-all duration-500"
+                        style={{ width: `${Math.min(100, (startVoteCount / Math.max(quorum, 1)) * 100)}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* Vote button */}
+                {isConnected && isInArena && (
+                  <button
+                    onClick={voteToStart}
+                    disabled={hasVotedToStart}
+                    className="w-full py-3 lg:py-4 text-[11px] lg:text-sm font-bold uppercase tracking-widest border-2 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                    style={hasVotedToStart
+                      ? { borderColor: '#26D96260', color: '#26D962', background: '#26D96210' }
+                      : { borderColor: '#26D962', color: 'black', background: '#26D962' }}
+                  >
+                    {hasVotedToStart ? '✓ READY TO START — waiting for others' : '🗳 VOTE TO START GAME'}
+                  </button>
+                )}
+
+                {isConnected && !isInArena && (
+                  <div className="text-[10px] lg:text-xs text-[#555] font-mono text-center mt-2">
+                    Join the game first, then vote to start
+                  </div>
+                )}
+
+                {!isConnected && (
+                  <div className="text-[10px] lg:text-xs text-[#555] font-mono text-center mt-2">
+                    Connect wallet to join and vote
+                  </div>
+                )}
+
+                {/* Players in lobby */}
+                {players.length > 0 && (
+                  <div className="mt-4 pt-3 border-t border-[#1a1a1a]">
+                    <div className="text-[9px] lg:text-[11px] text-[#444] uppercase tracking-widest mb-2 font-bold">
+                      In lobby ({players.length})
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {players.map(p => (
+                        <div
+                          key={p.addr}
+                          className="text-[9px] lg:text-[10px] font-mono px-2 py-0.5 border border-[#222] text-[#666]"
+                          style={{ color: p.addr.toLowerCase() === address?.toLowerCase() ? '#26D962' : undefined }}
+                        >
+                          {p.addr.toLowerCase() === address?.toLowerCase() ? 'YOU' : p.addr.slice(0, 8) + '…'}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {activePlayers.length === 0 && !isGameWaiting && (
               <div className="text-center py-12">
                 <div className="text-[#333] font-mono text-sm mb-2">Arena is empty</div>
                 {isConnected ? (
-                  <div className="text-[#3396FF] text-xs">Click "JOIN + AUTHORIZE" to enter (0.01 MON)</div>
+                  <div className="text-[#3396FF] text-xs">Click "JOIN GAME" to enter (0.01 MON)</div>
                 ) : (
                   <div className="text-[#555] text-xs">Connect wallet to join</div>
                 )}
               </div>
             )}
 
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-2 lg:gap-3">
               {activePlayers.map(player => {
                 // Show attack target ring when player hovers ATTACK button
                 const isPreviewTarget = isAttackHovered

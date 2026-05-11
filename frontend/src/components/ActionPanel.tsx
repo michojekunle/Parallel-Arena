@@ -31,7 +31,7 @@ const ACTION_CONFIG = [
 
 const JOIN_STEPS: Record<JoinStep, string> = {
   idle:    '',
-  joining: 'Joining arena (1 confirmation)...',
+  joining: 'Joining arena (2 confirmations)...',
   done:    'Ready!',
 }
 
@@ -99,7 +99,7 @@ export function ActionPanel({
       {/* Tx status bar */}
       {txInfo && (
         <div
-          className="px-4 py-1.5 text-[10px] font-mono flex items-center justify-between border-b border-[#1a1a1a]"
+          className="px-4 lg:px-6 py-1.5 lg:py-2 text-[10px] lg:text-xs font-mono flex items-center justify-between border-b border-[#1a1a1a]"
           style={{ color: txInfo.color }}
         >
           <span>{txInfo.label}</span>
@@ -119,7 +119,7 @@ export function ActionPanel({
       {/* Eliminated → Spectator banner */}
       {isDead && (
         <div className="px-4 py-2 bg-[#EE0000]/10 border-b border-[#EE0000]/20 flex items-center justify-between">
-          <span className="text-[10px] font-bold text-[#EE0000] uppercase tracking-widest">
+          <span className="text-[10px] lg:text-xs font-bold text-[#EE0000] uppercase tracking-widest">
             ☠ SPECTATING — you were eliminated
           </span>
           <button
@@ -131,7 +131,7 @@ export function ActionPanel({
         </div>
       )}
 
-      <div className="px-4 py-3 sm:px-6">
+      <div className="px-4 py-3 sm:px-6 lg:py-5 lg:px-8">
         <div className="flex items-center justify-between mb-3">
           <span className="text-[10px] text-white font-bold uppercase tracking-[0.2em]">
             {isEliminated ? 'SPECTATING' : isInArena ? 'CHOOSE ACTION' : 'JOIN ARENA'}
@@ -139,7 +139,7 @@ export function ActionPanel({
           <div className="flex items-center gap-3">
             {/* Urgent timer */}
             <span
-              className={`text-[10px] font-mono font-bold transition-colors ${urgentTimer ? 'text-red-500 animate-pulse' : 'text-[#444]'}`}
+              className={`text-[10px] lg:text-xs font-mono font-bold transition-colors ${urgentTimer ? 'text-red-500 animate-pulse' : 'text-[#444]'}`}
             >
               {isInArena && !roundResolved && timeRemaining > 0 ? `${timeRemaining}s` : ''}
             </span>
@@ -162,16 +162,26 @@ export function ActionPanel({
             {showJoinButton ? (
               <div className="flex-1 flex flex-col gap-1">
                 <button
-                  className="flex-1 min-w-[140px] py-3 px-4 text-[11px] font-bold uppercase tracking-[0.15em] border-2 border-white text-white hover:bg-white hover:text-black transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="flex-1 min-w-[110px] py-2.5 sm:py-3 px-3 sm:px-4 text-[10px] sm:text-[11px] font-bold uppercase tracking-[0.1em] sm:tracking-[0.15em] border-2 border-white text-white hover:bg-white hover:text-black transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                   onClick={onJoinAndAuthorize}
                   disabled={isJoining}
                 >
                   {isJoining ? JOIN_STEPS[joinStep] : '⚡ JOIN GAME (0.01 MON)'}
                 </button>
                 {!isJoining && (
-                  <span className="text-[9px] text-[#555] font-mono">
-                    1 confirmation to join — all actions use gasless signatures
-                  </span>
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <span className="text-[9px] text-[#555] font-mono">
+                      2 confirmations to join — all actions gasless &amp; silent after
+                    </span>
+                    <a
+                      href="https://faucet.monad.xyz"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[9px] text-[#3396FF] hover:underline font-mono whitespace-nowrap"
+                    >
+                      Need MON? Get testnet tokens ↗
+                    </a>
+                  </div>
                 )}
               </div>
             ) : (
@@ -179,7 +189,7 @@ export function ActionPanel({
                 {ACTION_CONFIG.map(({ action, label, color }) => (
                   <button
                     key={action}
-                    className="flex-1 min-w-[80px] py-3 px-2 sm:px-4 text-[10px] sm:text-[11px] font-bold uppercase tracking-[0.1em] border-2 transition-all disabled:cursor-not-allowed"
+                    className="flex-1 min-w-[70px] py-2.5 sm:py-3 lg:py-4 px-2 sm:px-4 text-[9px] sm:text-[11px] lg:text-sm font-bold uppercase tracking-[0.08em] sm:tracking-[0.1em] border-2 transition-all disabled:cursor-not-allowed"
                     style={getButtonStyle(action, color)}
                     onClick={() => onAction(action)}
                     disabled={!canAct}
@@ -204,12 +214,12 @@ export function ActionPanel({
         )}
 
         {hasActed && (
-          <div className="mt-2 text-[10px] font-mono text-[#26D962]">
+          <div className="mt-2 lg:mt-3 text-[10px] lg:text-xs font-mono text-[#26D962]">
             ⚡ Signed — Action locked in. Waiting for round to resolve...
           </div>
         )}
         {roundResolved && (
-          <div className="mt-2 text-[10px] font-mono text-[#555]">
+          <div className="mt-2 lg:mt-3 text-[10px] lg:text-xs font-mono text-[#555]">
             Round resolved — next round starting...
           </div>
         )}

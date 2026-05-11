@@ -2,9 +2,9 @@
 
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { createPublicClient, http } from 'viem'
+import { createPublicClient, http, fallback } from 'viem'
 import { PrizeAmounts, Player } from '@/lib/types'
-import { SHORT_ADDR, monadTestnet } from '@/lib/constants'
+import { SHORT_ADDR, monadTestnet, RPC_URLS } from '@/lib/constants'
 import { ABI, CONTRACT_ADDRESS } from '@/lib/contract'
 import { useGameReplay } from '@/hooks/useGameReplay'
 import { ReplayViewer } from './ReplayViewer'
@@ -12,7 +12,7 @@ import { formatEther } from 'viem'
 
 const publicClient = createPublicClient({
   chain: monadTestnet,
-  transport: http(process.env.NEXT_PUBLIC_RPC_URL || 'https://testnet-rpc.monad.xyz'),
+  transport: fallback(RPC_URLS.map(url => http(url, { timeout: 10_000 }))),
 })
 
 interface EndGameModalProps {

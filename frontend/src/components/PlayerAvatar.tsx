@@ -37,7 +37,7 @@ function SegmentedHealthBar({ health, maxHealth = 100 }: { health: number; maxHe
       {Array.from({ length: segments }).map((_, i) => (
         <div
           key={i}
-          className="flex-1 h-1.5 rounded-sm transition-all duration-300"
+          className="flex-1 h-1.5 lg:h-2 rounded-sm transition-all duration-300"
           style={{ background: i < filled ? color : '#1a1a1a' }}
         />
       ))}
@@ -156,11 +156,11 @@ export function PlayerAvatar({ player, currentAction, isMe, isUnderAttack, isTar
         </div>
       )}
 
-      <div className={`p-2 ${isDead ? 'opacity-30' : ''}`}>
+      <div className={`p-2 lg:p-3 ${isDead ? 'opacity-30' : ''}`}>
         {/* Avatar glyph */}
         <div className="flex items-center justify-between mb-1.5">
           <motion.div
-            className="text-lg"
+            className="text-xl lg:text-2xl"
             animate={showEffect === 'attack' ? { scale: [1, 1.3, 1], rotate: [-5, 5, 0] } : {}}
             transition={{ duration: 0.3 }}
           >
@@ -173,22 +173,22 @@ export function PlayerAvatar({ player, currentAction, isMe, isUnderAttack, isTar
                 YOU
               </span>
             )}
-            <span className="text-[9px] text-[#444]">☠{player.kills.toString()}</span>
+            <span className="text-[9px] lg:text-[11px] text-[#444]">☠{player.kills.toString()}</span>
           </div>
         </div>
 
         {/* Address */}
-        <div className="text-[9px] font-mono text-[#555] mb-1.5 truncate">
+        <div className="text-[9px] lg:text-[11px] font-mono text-[#555] mb-1.5 truncate">
           {SHORT_ADDR(addr)}
         </div>
 
         {/* Health bar */}
         <SegmentedHealthBar health={health} />
         <div className="flex items-center justify-between mt-1">
-          <span className="text-[9px] font-mono" style={{ color: health <= 25 ? '#EE0000' : '#555' }}>
+          <span className="text-[9px] lg:text-[11px] font-bold font-mono" style={{ color: health <= 25 ? '#EE0000' : '#555' }}>
             {health}HP
           </span>
-          <span className="text-[9px] font-mono text-[#333]">
+          <span className="text-[9px] lg:text-[11px] font-mono text-[#333]">
             <span style={{ color: '#EE0000' }}>{player.attack.toString()}</span>
             <span className="text-[#222] mx-0.5">/</span>
             <span style={{ color: '#3396FF' }}>{player.defense.toString()}</span>
@@ -200,7 +200,7 @@ export function PlayerAvatar({ player, currentAction, isMe, isUnderAttack, isTar
           <motion.div
             initial={{ opacity: 0, scale: 0.8 }}
             animate={{ opacity: 1, scale: 1 }}
-            className="mt-1.5 text-center text-[8px] font-bold uppercase tracking-wider py-0.5"
+            className="mt-1.5 lg:mt-2 text-center text-[8px] lg:text-[10px] font-bold uppercase tracking-wider py-0.5 lg:py-1"
             style={{
               color: ACTION_COLORS[currentAction] || '#fff',
               background: `${ACTION_COLORS[currentAction] || '#fff'}15`,
