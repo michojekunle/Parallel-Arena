@@ -5,10 +5,14 @@
     "dev": "cd frontend && npm run dev",
     "arena": "node scripts/orchestrate.js",
     "fund": "node scripts/distributeMon.js",
-    "resolve": "node scripts/autoResolve.js"
+    "resolve": "node scripts/autoResolve.js",
+    "balance": "node scripts/balanceManager.js"
   },
   "dependencies": {
     "dotenv": "^16.4.5",
     "viem": "^2.9.15"
+  },
+  "devDependencies": {
+    "jest": "^30.3.0"
   }
 }
