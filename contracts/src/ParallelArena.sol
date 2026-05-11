@@ -432,56 +432,66 @@ contract ParallelArena {
     // RESOLVE ROUND — pays resolver reward from pending fees
     // ============================================================
 
-    function resolveRound() external {
-        require(!roundResolved[currentRound], "Already resolved");
-        require(phase == GamePhase.ACTIVE, "Game not active");
-        require(
-            block.timestamp >= roundDeadline || _allPlayersActed(),
-            "Round not ready: wait for deadline or all players to act"
-        );
+    // ── Internal structs used to pass round data between sub-functions ──────────
+    // Splitting resolveRound() into sub-calls keeps each frame under the
+    // EVM 16-slot stack limit — critical for `forge coverage` which disables viaIR.
 
-        uint256 round = currentRound;
-        roundResolver[round] = msg.sender;
+    struct SortedActions {
+        address[] attackers;
+        address[] healers;
+        bool[]    isDefending;   // indexed by position in activePlayers[]
+        uint256   atkCount;
+        uint256   healCount;
+        uint256   actionsProcessed;
+        uint256   defendersProtected;
+    }
 
-        uint256 actionsProcessed;
+    struct RoundTotals {
         uint256 attacksLanded;
         uint256 healsApplied;
-        uint256 defendersProtected;
         uint256 playersEliminated;
+    }
 
-        address[] memory activePlayers = _getActivePlayers();
-        uint256 n = activePlayers.length;
-
-        address[] memory attackers = new address[](n);
-        address[] memory defenders = new address[](n);
-        address[] memory healers   = new address[](n);
-        uint256 atkCount; uint256 defCount; uint256 healCount;
+    /// @dev Sort player actions into groups. Kept separate to free stack slots in resolveRound().
+    function _sortActions(
+        uint256 round,
+        address[] memory activePlayers,
+        uint256 n
+    ) private returns (SortedActions memory s) {
+        s.attackers    = new address[](n);
+        s.healers      = new address[](n);
+        s.isDefending  = new bool[](n);
 
         for (uint256 i = 0; i < n; i++) {
             Action a = roundActions[round][activePlayers[i]];
-            if (a == Action.ATTACK) { attackers[atkCount++] = activePlayers[i]; actionsProcessed++; }
-            if (a == Action.DEFEND) { defenders[defCount++] = activePlayers[i]; actionsProcessed++; }
-            if (a == Action.HEAL)   { healers[healCount++]  = activePlayers[i]; actionsProcessed++; }
-        }
-
-        // Defender flags
-        bool[] memory isDefending = new bool[](n);
-        for (uint256 i = 0; i < defCount; i++) {
-            for (uint256 j = 0; j < n; j++) {
-                if (activePlayers[j] == defenders[i]) { isDefending[j] = true; break; }
+            if (a == Action.ATTACK) {
+                s.attackers[s.atkCount++] = activePlayers[i];
+                s.actionsProcessed++;
+            } else if (a == Action.DEFEND) {
+                s.isDefending[i] = true;
+                s.actionsProcessed++;
+                s.defendersProtected++;
+                emit PlayerDefended(activePlayers[i]);
+            } else if (a == Action.HEAL) {
+                s.healers[s.healCount++] = activePlayers[i];
+                s.actionsProcessed++;
             }
-            defendersProtected++;
-            emit PlayerDefended(defenders[i]);
         }
+    }
 
-        // Resolve attacks
+    /// @dev Resolve all attacks. Returns (attacksLanded, playersEliminated).
+    function _resolveAttacks(
+        uint256 round,
+        address[] memory activePlayers,
+        uint256 n,
+        address[] memory attackers,
+        uint256 atkCount,
+        bool[] memory isDefending
+    ) private returns (uint256 attacksLanded, uint256 playersEliminated) {
         for (uint256 i = 0; i < atkCount; i++) {
             address atk = attackers[i];
             (address target,) = _findTarget(activePlayers, n, atk, isDefending);
-            if (target == address(0)) {
-                emit AttackMissed(atk, round);
-                continue;
-            }
+            if (target == address(0)) { emit AttackMissed(atk, round); continue; }
 
             uint256 finalDmg = players[atk].attack;
             if (players[target].health <= finalDmg) {
@@ -498,8 +508,13 @@ contract ParallelArena {
             attacksLanded++;
             emit PlayerAttacked(atk, target, finalDmg);
         }
+    }
 
-        // Resolve heals
+    /// @dev Resolve all heals. Returns healsApplied.
+    function _resolveHeals(
+        address[] memory healers,
+        uint256 healCount
+    ) private returns (uint256 healsApplied) {
         for (uint256 i = 0; i < healCount; i++) {
             address h = healers[i];
             if (players[h].status != PlayerStatus.ACTIVE) continue;
@@ -508,33 +523,51 @@ contract ParallelArena {
             healsApplied++;
             emit PlayerHealed(h, 20);
         }
+    }
 
-        // Pay resolver a bounty from agent round fees if agents participated
+    function resolveRound() external {
+        require(!roundResolved[currentRound], "Already resolved");
+        require(phase == GamePhase.ACTIVE, "Game not active");
+        require(
+            block.timestamp >= roundDeadline || _allPlayersActed(),
+            "Round not ready: wait for deadline or all players to act"
+        );
+
+        uint256 round = currentRound;
+        roundResolver[round] = msg.sender;
+
+        address[] memory activePlayers = _getActivePlayers();
+        uint256 n = activePlayers.length;
+
+        // Sort actions — each sub-call has its own stack frame
+        SortedActions memory s = _sortActions(round, activePlayers, n);
+
+        RoundTotals memory t;
+        (t.attacksLanded, t.playersEliminated) = _resolveAttacks(
+            round, activePlayers, n, s.attackers, s.atkCount, s.isDefending
+        );
+        t.healsApplied = _resolveHeals(s.healers, s.healCount);
+
+        // Resolver bounty
         uint256 resolverBounty = _calcResolverBounty(activePlayers, n);
-        if (resolverBounty > 0) {
-            pendingRewards[msg.sender] += resolverBounty;
-        }
+        if (resolverBounty > 0) pendingRewards[msg.sender] += resolverBounty;
 
         roundResolved[round] = true;
         roundResults[round] = RoundResult({
             round: round,
-            actionsProcessed: actionsProcessed,
-            attacksLanded: attacksLanded,
-            healsApplied: healsApplied,
-            defendersProtected: defendersProtected,
-            playersEliminated: playersEliminated,
+            actionsProcessed: s.actionsProcessed,
+            attacksLanded: t.attacksLanded,
+            healsApplied: t.healsApplied,
+            defendersProtected: s.defendersProtected,
+            playersEliminated: t.playersEliminated,
             resolvedAt: block.timestamp
         });
-        emit RoundResolved(round, actionsProcessed, block.timestamp);
+        emit RoundResolved(round, s.actionsProcessed, block.timestamp);
 
         currentRound++;
         roundDeadline = block.timestamp + ROUND_DURATION;
 
-        // End game when MAX_ROUNDS completed OR ALL players eliminated
-        bool maxRoundsReached = currentRound >= MAX_ROUNDS;
-        bool allEliminated    = activePlayerCount == 0;
-
-        if (maxRoundsReached || allEliminated) {
+        if (currentRound >= MAX_ROUNDS || activePlayerCount == 0) {
             _endGame();
         }
     }

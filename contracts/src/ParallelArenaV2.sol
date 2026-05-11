@@ -107,6 +107,11 @@ contract ParallelArenaV2 {
     mapping(address => Player) public players;
     address[] public playerList;
     uint256 public activePlayerCount;
+    uint256 public humanPlayerCount; // non-agent players only
+
+    // ── Start quorum ──────────────────────────────────────────────
+    mapping(address => bool) public startVotes;
+    uint256 public startVoteCount;
 
     address[3] public winners;
     mapping(address => bool) public prizeClaimed;
@@ -169,6 +174,8 @@ contract ParallelArenaV2 {
     // ============================================================
 
     event PlayerJoined(address indexed player, uint256 health, uint256 attack, uint256 prizePool);
+    event StartVoted(address indexed player, uint256 voteCount, uint256 quorumRequired);
+    event GameStarted(uint256 roundDeadline);
     event ActionSubmitted(address indexed player, Action action, uint256 round);
     event RoundResolved(uint256 indexed round, uint256 actionsProcessed, uint256 resolvedAt);
     event PlayerAttacked(address indexed attacker, address indexed target, uint256 damage);
@@ -309,6 +316,7 @@ contract ParallelArenaV2 {
         });
         playerList.push(msg.sender);
         activePlayerCount++;
+        humanPlayerCount++;
 
         // O(1) all-time participant tracking
         if (!isAllTimeParticipant[msg.sender]) {
@@ -316,12 +324,51 @@ contract ParallelArenaV2 {
             allTimeParticipants.push(msg.sender);
         }
 
-        if (activePlayerCount == 1) {
-            phase = GamePhase.ACTIVE;
-            roundDeadline = block.timestamp + ROUND_DURATION;
-        }
-
         emit PlayerJoined(msg.sender, STARTING_HEALTH, atkPower, prizePool);
+    }
+
+    // ============================================================
+    // QUORUM / START VOTING
+    // ============================================================
+
+    /// @notice Returns the number of votes needed to start the game.
+    /// - <= 10 players: 3 votes (or all if fewer than 3 joined)
+    /// - > 10 players: ceil(30% of active players)
+    function quorumRequired() public view returns (uint256) {
+        uint256 n = activePlayerCount;
+        if (n <= 10) return n < 3 ? n : 3;
+        return (n * 30 + 99) / 100; // ceil(0.3 * n)
+    }
+
+    /// @notice Vote to start the game. Agents vote automatically when they join.
+    function voteToStart() external {
+        require(phase == GamePhase.WAITING, "Game already started");
+        require(players[msg.sender].status == PlayerStatus.ACTIVE, "Not in arena");
+        require(!startVotes[msg.sender], "Already voted");
+        startVotes[msg.sender] = true;
+        startVoteCount++;
+        emit StartVoted(msg.sender, startVoteCount, quorumRequired());
+        _checkAndStart();
+    }
+
+    /// @notice Owner/relayer override to start immediately (safety valve).
+    function startGame() external {
+        require(msg.sender == relayerAddress || msg.sender == owner, "Not authorized");
+        require(phase == GamePhase.WAITING, "Game already started");
+        require(activePlayerCount >= 2, "Need at least 2 players");
+        _doStart();
+    }
+
+    function _checkAndStart() internal {
+        if (activePlayerCount >= 2 && startVoteCount >= quorumRequired()) {
+            _doStart();
+        }
+    }
+
+    function _doStart() internal {
+        phase = GamePhase.ACTIVE;
+        roundDeadline = block.timestamp + ROUND_DURATION;
+        emit GameStarted(roundDeadline);
     }
 
     // ============================================================
@@ -423,10 +470,13 @@ contract ParallelArenaV2 {
             allTimeParticipants.push(agentAddress);
         }
 
-        if (activePlayerCount == 1) {
-            phase = GamePhase.ACTIVE;
-            roundDeadline = block.timestamp + ROUND_DURATION;
+        // Agents auto-vote to start
+        if (!startVotes[agentAddress]) {
+            startVotes[agentAddress] = true;
+            startVoteCount++;
+            emit StartVoted(agentAddress, startVoteCount, quorumRequired());
         }
+        _checkAndStart();
 
         emit PlayerJoined(agentAddress, STARTING_HEALTH, atkPower, prizePool);
     }
@@ -486,57 +536,68 @@ contract ParallelArenaV2 {
     // RESOLVE ROUND
     // ============================================================
 
-    function resolveRound() external {
-        require(!roundResolved[currentRound], "Already resolved");
-        require(phase == GamePhase.ACTIVE, "Game not active");
-        // 2-second MEV mitigation: resolver must wait after deadline
-        require(
-            (block.timestamp >= roundDeadline + RESOLVE_COOLDOWN) || _allPlayersActed(),
-            "Round not ready"
-        );
+    // ── Internal structs — split resolveRound() into sub-calls to stay under ───
+    // the EVM 16-slot stack limit. Each helper has its own stack frame.
+    // This also makes `forge coverage` work without --ir-minimum.
 
-        uint256 round = currentRound;
-        roundResolver[round] = msg.sender;
+    struct SortedActionsV2 {
+        address[] attackers;
+        address[] healers;
+        bool[]    isDefending;
+        uint256   atkCount;
+        uint256   healCount;
+        uint256   actionsProcessed;
+        uint256   defendersProtected;
+    }
 
-        uint256 actionsProcessed;
+    struct RoundTotalsV2 {
         uint256 attacksLanded;
         uint256 healsApplied;
-        uint256 defendersProtected;
         uint256 playersEliminated;
+    }
 
-        address[] memory activePlayers = _getActivePlayers();
-        uint256 n = activePlayers.length;
-
-        // --- Use prevrandao as a salt to randomise traversal order ---
-        // This prevents any single player knowing exactly who will be targeted
-        // in advance by observing the mempool, since prevrandao is only known
-        // once the block is proposed.
-        uint256 randSalt = uint256(block.prevrandao);
-
-        address[] memory attackers = new address[](n);
-        address[] memory healers   = new address[](n);
-        uint256 atkCount; uint256 healCount;
-
-        // Single-pass O(n+defCount) defender flag array instead of nested loop
-        bool[] memory isDefending = new bool[](n);
+    function _sortActionsV2(
+        uint256 round,
+        address[] memory activePlayers,
+        uint256 n
+    ) private returns (SortedActionsV2 memory s) {
+        s.attackers   = new address[](n);
+        s.healers     = new address[](n);
+        s.isDefending = new bool[](n);
 
         for (uint256 i = 0; i < n; i++) {
             Action a = roundActions[round][activePlayers[i]];
-            if (a == Action.ATTACK)  { attackers[atkCount++] = activePlayers[i]; actionsProcessed++; }
-            else if (a == Action.DEFEND) { isDefending[i] = true; actionsProcessed++; defendersProtected++; emit PlayerDefended(activePlayers[i]); }
-            else if (a == Action.HEAL)   { healers[healCount++]  = activePlayers[i]; actionsProcessed++; }
+            if (a == Action.ATTACK) {
+                s.attackers[s.atkCount++] = activePlayers[i];
+                s.actionsProcessed++;
+            } else if (a == Action.DEFEND) {
+                s.isDefending[i] = true;
+                s.actionsProcessed++;
+                s.defendersProtected++;
+                emit PlayerDefended(activePlayers[i]);
+            } else if (a == Action.HEAL) {
+                s.healers[s.healCount++] = activePlayers[i];
+                s.actionsProcessed++;
+            }
         }
+    }
 
-        // Resolve attacks with prevrandao-salted target selection
+    function _resolveAttacksV2(
+        uint256 round,
+        address[] memory activePlayers,
+        uint256 n,
+        address[] memory attackers,
+        uint256 atkCount,
+        bool[] memory isDefending,
+        uint256 randSalt
+    ) private returns (uint256 attacksLanded, uint256 playersEliminated) {
         for (uint256 i = 0; i < atkCount; i++) {
             address atk = attackers[i];
             (address target,) = _findTarget(activePlayers, n, atk, isDefending, randSalt ^ uint256(uint160(atk)));
-            if (target == address(0)) {
-                emit AttackMissed(atk, round);
-                continue;
-            }
+            if (target == address(0)) { emit AttackMissed(atk, round); continue; }
 
             uint256 finalDmg = players[atk].attack;
+            playerStats[atk].totalDamage += uint32(finalDmg);
             if (players[target].health <= finalDmg) {
                 players[target].health = 0;
                 players[target].status = PlayerStatus.DEAD;
@@ -551,12 +612,15 @@ contract ParallelArenaV2 {
             attacksLanded++;
             emit PlayerAttacked(atk, target, finalDmg);
         }
+    }
 
-        // Resolve heals with diminishing returns
+    function _resolveHealsV2(
+        address[] memory healers,
+        uint256 healCount
+    ) private returns (uint256 healsApplied) {
         for (uint256 i = 0; i < healCount; i++) {
             address h = healers[i];
             if (players[h].status != PlayerStatus.ACTIVE) continue;
-
             uint256 streakIdx = players[h].consecutiveHeals >= 2 ? 2 : players[h].consecutiveHeals;
             uint256 healAmt = HEAL_AMOUNTS[streakIdx];
             uint256 newHealth = players[h].health + healAmt;
@@ -565,6 +629,33 @@ contract ParallelArenaV2 {
             healsApplied++;
             emit PlayerHealed(h, healAmt);
         }
+    }
+
+    function resolveRound() external {
+        require(!roundResolved[currentRound], "Already resolved");
+        require(phase == GamePhase.ACTIVE, "Game not active");
+        // 2-second MEV mitigation: resolver must wait after deadline
+        require(
+            (block.timestamp >= roundDeadline + RESOLVE_COOLDOWN) || _allPlayersActed(),
+            "Round not ready"
+        );
+
+        uint256 round = currentRound;
+        roundResolver[round] = msg.sender;
+
+        address[] memory activePlayers = _getActivePlayers();
+        uint256 n = activePlayers.length;
+
+        // prevrandao salt — unknown until block is proposed, prevents MEV target prediction
+        uint256 randSalt = uint256(block.prevrandao);
+
+        SortedActionsV2 memory s = _sortActionsV2(round, activePlayers, n);
+
+        RoundTotalsV2 memory t;
+        (t.attacksLanded, t.playersEliminated) = _resolveAttacksV2(
+            round, activePlayers, n, s.attackers, s.atkCount, s.isDefending, randSalt
+        );
+        t.healsApplied = _resolveHealsV2(s.healers, s.healCount);
 
         // Reset consecutive heal counter for non-healers
         for (uint256 i = 0; i < n; i++) {
@@ -576,21 +667,19 @@ contract ParallelArenaV2 {
 
         // Resolver bounty from agent round fees
         uint256 resolverBounty = _calcResolverBounty(activePlayers, n);
-        if (resolverBounty > 0) {
-            pendingRewards[msg.sender] += resolverBounty;
-        }
+        if (resolverBounty > 0) pendingRewards[msg.sender] += resolverBounty;
 
         roundResolved[round] = true;
         roundResults[round] = RoundResult({
             round: round,
-            actionsProcessed: actionsProcessed,
-            attacksLanded: attacksLanded,
-            healsApplied: healsApplied,
-            defendersProtected: defendersProtected,
-            playersEliminated: playersEliminated,
+            actionsProcessed: s.actionsProcessed,
+            attacksLanded: t.attacksLanded,
+            healsApplied: t.healsApplied,
+            defendersProtected: s.defendersProtected,
+            playersEliminated: t.playersEliminated,
             resolvedAt: block.timestamp
         });
-        emit RoundResolved(round, actionsProcessed, block.timestamp);
+        emit RoundResolved(round, s.actionsProcessed, block.timestamp);
 
         currentRound++;
         roundDeadline = block.timestamp + ROUND_DURATION;
@@ -644,7 +733,13 @@ contract ParallelArenaV2 {
         ));
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
         address recovered = ecrecover(digest, v, r, s);
-        require(recovered != address(0) && recovered == player, "Invalid signature");
+        // Accept signature from the player directly OR from their authorized session key.
+        address sk = sessionKeys[player];
+        bool validSig = (recovered != address(0)) && (
+            recovered == player ||
+            (sk != address(0) && recovered == sk && sessionKeyExpiry[player] >= block.timestamp)
+        );
+        require(validSig, "Invalid signature");
 
         nonces[player]++;
 
@@ -994,6 +1089,8 @@ contract ParallelArenaV2 {
         }
 
         activePlayerCount = 0;
+        humanPlayerCount  = 0;
+        startVoteCount    = 0;
         currentRound      = 0;
         roundDeadline     = 0;
         prizePool         = 0;
