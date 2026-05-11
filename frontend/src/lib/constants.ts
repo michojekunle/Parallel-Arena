@@ -4,6 +4,7 @@ import { defineChain } from 'viem'
 // the next URL automatically on timeout or 5xx errors.
 export const RPC_URLS: string[] = [
   process.env.NEXT_PUBLIC_RPC_URL || 'https://testnet-rpc.monad.xyz',
+  'https://monad-testnet.drpc.org',
 ].filter(Boolean)
 
 export const monadTestnet = defineChain({

@@ -14,16 +14,12 @@ import { useSessionKey } from './useSessionKey'
 
 const publicClient = createPublicClient({
   chain: monadTestnet,
-  transport: http('https://testnet-rpc.monad.xyz', {
-    retryCount: 5,
-    retryDelay: 1000,
-    timeout: 30000,
-  }),
+  transport: fallback(RPC_URLS.map(url => http(url, { timeout: 10_000 }))),
 })
 
-// EIP-712 domain — must match contract constructor.
+// EIP-712 domain — must match contract constructor (keccak256("ParallelArenaV2")).
 const EIP712_DOMAIN = {
-  name: 'ParallelArena',
+  name: 'ParallelArenaV2',
   version: '1',
   chainId: monadTestnet.id,
   verifyingContract: CONTRACT_ADDRESS,
@@ -116,6 +112,11 @@ export function useArena() {
   const [lastRoundNum, setLastRoundNum] = useState<number>(0)
   const [resolvedTxHashes, setResolvedTxHashes] = useState<`0x${string}`[]>([])
 
+  // Quorum / start voting
+  const [startVoteCount, setStartVoteCount] = useState<number>(0)
+  const [quorum, setQuorum] = useState<number>(0)
+  const [hasVotedToStart, setHasVotedToStart] = useState(false)
+
   // Tx status machine (6.1)
   const [txStatus, setTxStatus] = useState<TxStatus>('idle')
   const [txHash, setTxHash] = useState<`0x${string}` | null>(null)
@@ -190,6 +191,18 @@ export function useArena() {
       setFullGameState({ round, deadline, activePlayers, totalPlayers, resolved, pool, maxRounds, gamePhase, winners: topWinners })
       setPlayers(typedPlayers)
       setTimeRemaining(Number(remaining))
+
+      // Fetch quorum state when game is WAITING
+      if (gamePhase === GamePhase.WAITING) {
+        try {
+          const [vc, qr] = await Promise.all([
+            publicClient.readContract({ address: CONTRACT_ADDRESS, abi: ABI, functionName: 'startVoteCount' }),
+            publicClient.readContract({ address: CONTRACT_ADDRESS, abi: ABI, functionName: 'quorumRequired' }),
+          ]) as [bigint, bigint]
+          setStartVoteCount(Number(vc))
+          setQuorum(Number(qr))
+        } catch { /* non-fatal */ }
+      }
 
       if (pool > 0n) {
         try {
@@ -335,7 +348,7 @@ export function useArena() {
         abi: ABI,
         functionName: 'joinArena',
         value: parseEther('0.01'),
-        gasPrice: parseGwei('250'),
+        gasPrice: parseGwei('52'),
       })
       await publicClient.waitForTransactionReceipt({ hash })
 
@@ -345,14 +358,7 @@ export function useArena() {
         abi: ABI,
         functionName: 'authorizeSessionKey',
         args: [sessionAddress, BigInt(Math.floor(Date.now() / 1000) + 86400)],
-        gasPrice: parseGwei('250'),
-      })
-
-      // Fund session address for gas
-      await walletClient.sendTransaction({
-        to: sessionAddress,
-        value: parseEther('0.01'),
-        gasPrice: parseGwei('250'),
+        gasPrice: parseGwei('52'),
       })
 
       await publicClient.waitForTransactionReceipt({ hash: authHash })
@@ -400,17 +406,20 @@ export function useArena() {
 
       const now = await getServerTime()
 
+      const nonce = await publicClient.readContract({
+        address: CONTRACT_ADDRESS, abi: ABI, functionName: 'nonces', args: [address],
+      }) as bigint
+      const deadline = BigInt(now + 180)
+
       if (isAuthorized && sessionWallet) {
-        // 1.3 — validate session key expiry before silent submit
+        // Session key is authorized — sign the EIP-712 permit locally (no MetaMask popup).
+        // The contract accepts session key signatures so the relay can submit on behalf of the player.
         const expiry = await getSessionExpiry(address)
         if (expiry < BigInt(now)) {
+          // Session key expired — invalidate and fall back to user wallet
           setIsAuthorized(false)
           sessionExpiryRef.current = null
-          showToast('Session expired — falling back to gasless', 'error')
-          const nonce = await publicClient.readContract({
-            address: CONTRACT_ADDRESS, abi: ABI, functionName: 'nonces', args: [address],
-          }) as bigint
-          const deadline = BigInt(now + 180)
+          showToast('Session expired — please re-join to restore silent mode', 'error')
           const signature = await signTypedDataAsync({
             domain: EIP712_DOMAIN, types: ACTION_PERMIT_TYPES, primaryType: 'ActionPermit',
             message: { player: address, action, round: BigInt(round), nonce, deadline },
@@ -418,18 +427,17 @@ export function useArena() {
           const { v, r, s } = splitSig(signature)
           hash = await relay({ type: 'action', player: address, action, nonce: nonce.toString(), deadline: deadline.toString(), v, r, s })
         } else {
+          // Sign silently with session key (local private key — no MetaMask popup).
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          hash = await (sessionWallet as any).writeContract({
-            address: CONTRACT_ADDRESS, abi: ABI, functionName: 'submitAction',
-            args: [action], gasPrice: parseGwei('250'),
-          })
+          const signature = await (sessionWallet as any).signTypedData({
+            domain: EIP712_DOMAIN, types: ACTION_PERMIT_TYPES, primaryType: 'ActionPermit',
+            message: { player: address, action, round: BigInt(round), nonce, deadline },
+          }) as `0x${string}`
+          const { v, r, s } = splitSig(signature)
+          hash = await relay({ type: 'action', player: address, action, nonce: nonce.toString(), deadline: deadline.toString(), v, r, s })
         }
       } else {
-        // FALLBACK: Permit-Relay flow
-        const nonce = await publicClient.readContract({
-          address: CONTRACT_ADDRESS, abi: ABI, functionName: 'nonces', args: [address],
-        }) as bigint
-        const deadline = BigInt(now + 180)
+        // No session key — fall back to user wallet signing (MetaMask popup).
         const signature = await signTypedDataAsync({
           domain: EIP712_DOMAIN, types: ACTION_PERMIT_TYPES, primaryType: 'ActionPermit',
           message: { player: address, action, round: BigInt(round), nonce, deadline },
@@ -468,7 +476,7 @@ export function useArena() {
     if (!walletClient) { showToast('Connect wallet first', 'error'); return }
     try {
       const hash = await walletClient.writeContract({
-        address: CONTRACT_ADDRESS, abi: ABI, functionName: 'resolveRound', gasPrice: parseGwei('250'),
+        address: CONTRACT_ADDRESS, abi: ABI, functionName: 'resolveRound', gasPrice: parseGwei('52'),
       })
       showToast('Resolving round...', 'success')
       await publicClient.waitForTransactionReceipt({ hash })
@@ -476,6 +484,22 @@ export function useArena() {
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Unknown error'
       showToast(`Resolve failed: ${msg.slice(0, 60)}`, 'error')
+    }
+  }, [walletClient, showToast, fetchState])
+
+  const voteToStart = useCallback(async (): Promise<void> => {
+    if (!walletClient) { showToast('Connect wallet first', 'error'); return }
+    try {
+      const hash = await walletClient.writeContract({
+        address: CONTRACT_ADDRESS, abi: ABI, functionName: 'voteToStart', gasPrice: parseGwei('52'),
+      })
+      showToast('Vote submitted — waiting for quorum...', 'success')
+      setHasVotedToStart(true)
+      await publicClient.waitForTransactionReceipt({ hash })
+      await fetchState()
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Unknown error'
+      showToast(`Vote failed: ${msg.slice(0, 60)}`, 'error')
     }
   }, [walletClient, showToast, fetchState])
 
@@ -524,6 +548,14 @@ export function useArena() {
     }
   }, [walletClient, addLog, showToast, fetchState])
 
+  // Check if the current address has already voted to start
+  useEffect(() => {
+    if (!address || !CONTRACT_ADDRESS || fullGameState?.gamePhase !== GamePhase.WAITING) return
+    publicClient.readContract({
+      address: CONTRACT_ADDRESS, abi: ABI, functionName: 'startVotes', args: [address],
+    }).then(voted => setHasVotedToStart(voted as boolean)).catch(() => undefined)
+  }, [address, startVoteCount, fullGameState?.gamePhase])
+
   const myPlayer = players.find(p => p.addr.toLowerCase() === address?.toLowerCase()) ?? null
   const isInArena = myPlayer?.status === PlayerStatus.ACTIVE
   const isEliminated = myPlayer?.status === PlayerStatus.DEAD
@@ -559,9 +591,13 @@ export function useArena() {
     txStatus,
     txHash,
     attackTarget,
+    startVoteCount,
+    quorum,
+    hasVotedToStart,
     joinAndAuthorize,
     submitAction,
     resolveRound,
+    voteToStart,
     claimPrize,
     resetGame,
     sessionAddress,

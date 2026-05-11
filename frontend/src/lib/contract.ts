@@ -2,7 +2,7 @@ import { parseAbi } from 'viem'
 
 export const ABI = parseAbi([
   // Structs
-  'struct Player { address addr; uint256 health; uint256 attack; uint256 defense; uint8 status; uint256 roundsPlayed; uint256 kills; uint256 rank; }',
+  'struct Player { address addr; uint256 health; uint256 attack; uint256 defense; uint8 status; uint256 roundsPlayed; uint256 kills; uint256 rank; uint256 consecutiveHeals; }',
   'struct RoundResult { uint256 round; uint256 actionsProcessed; uint256 attacksLanded; uint256 healsApplied; uint256 defendersProtected; uint256 playersEliminated; uint256 resolvedAt; }',
   'struct AgentInfo { address owner; uint8 strategy; uint256 balance; bool active; uint256 gamesPlayed; uint256 totalKills; uint256 topThreeFinishes; }',
   'struct PlayerStats { uint32 gamesPlayed; uint32 wins; uint32 kills; uint32 totalDamage; }',
@@ -14,8 +14,15 @@ export const ABI = parseAbi([
   'function resetGame() external',
   'function entryFee() external pure returns (uint256)',
 
+  // Quorum / start voting
+  'function voteToStart() external',
+  'function startGame() external',
+  'function quorumRequired() external view returns (uint256)',
+  'function startVoteCount() external view returns (uint256)',
+  'function startVotes(address player) external view returns (bool)',
+  'function humanPlayerCount() external view returns (uint256)',
+
   // Read
-  'function getGameState() external view returns (uint256 round, uint256 deadline, uint256 activePlayers, uint256 totalPlayers, bool resolved)',
   'function getFullGameState() external view returns (uint256 round, uint256 deadline, uint256 activePlayers, uint256 totalPlayers, bool resolved, uint256 pool, uint256 maxRounds, uint8 gamePhase, address[3] topWinners)',
   'function getAllPlayers() external view returns (Player[])',
   'function getPlayer(address addr) external view returns (Player)',
@@ -80,6 +87,8 @@ export const ABI = parseAbi([
   'event SessionKeyAuthorized(address indexed player, address indexed sessionKey, uint256 expiresAt)',
   'event SessionKeyRevoked(address indexed player, address indexed sessionKey)',
   'event AttackMissed(address indexed attacker, uint256 round)',
+  'event StartVoted(address indexed player, uint256 voteCount, uint256 quorumRequired)',
+  'event GameStarted(uint256 roundDeadline)',
 ])
 
 export const CONTRACT_ADDRESS = (process.env.NEXT_PUBLIC_CONTRACT_ADDRESS || '0x0000000000000000000000000000000000000000') as `0x${string}`

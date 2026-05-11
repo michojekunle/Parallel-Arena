@@ -33,6 +33,7 @@ export interface Player {
   roundsPlayed: bigint
   kills: bigint
   rank: bigint
+  consecutiveHeals: bigint
 }
 
 export interface GameState {
