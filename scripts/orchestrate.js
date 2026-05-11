@@ -57,10 +57,10 @@ const masterAccount = privateKeyToAccount(MASTER_KEY)
 const walletClient = createWalletClient({ account: masterAccount, chain: monadTestnet, transport })
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const AGENT_MIN_BALANCE = parseEther('0.05')
-const AGENT_TOPUP = parseEther('0.1')
-const RELAYER_WARN_BALANCE = parseEther('0.5')   // warn when relayer drops below this
-const RELAYER_CRIT_BALANCE = parseEther('0.1')   // error — relay will fail soon
+const AGENT_MIN_BALANCE = parseEther('0.3')   // joinArena costs ~0.09 MON + 5 rounds ≈ 0.14 MON total
+const AGENT_TOPUP = parseEther('1.0')          // 1 MON ≈ 7 full games per agent
+const RELAYER_WARN_BALANCE = parseEther('2.0') // warn when master drops below 2 MON
+const RELAYER_CRIT_BALANCE = parseEther('0.5') // error — resolver will fail soon
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 async function checkBalance(address, label, warnThreshold, critThreshold) {
@@ -107,34 +107,40 @@ async function orchestrate() {
   }
   log('info', 'Agent balance check complete')
 
-  // 3. Spawn sub-processes
-  const agentProc = spawn('node', ['scripts/agents.js'], {
-    stdio: 'inherit',
-    env: { ...process.env },
-  })
-  log('info', 'Agents process spawned', { pid: agentProc.pid })
+  // 3. Spawn sub-processes with auto-restart on crash
+  const DAEMONS = [
+    { name: 'agents',       script: 'scripts/agents.js' },
+    { name: 'autoResolve',  script: 'scripts/autoResolve.js' },
+    { name: 'autoReset',    script: 'scripts/autoReset.js' },
+    { name: 'balanceMgr',   script: 'scripts/balanceManager.js' },
+  ]
 
-  const resolveProc = spawn('node', ['scripts/autoResolve.js'], {
-    stdio: 'inherit',
-    env: { ...process.env },
-  })
-  log('info', 'Auto-resolver process spawned', { pid: resolveProc.pid })
+  let shutdownRequested = false
+  const procs = new Map()
 
-  const resetProc = spawn('node', ['scripts/autoReset.js'], {
-    stdio: 'inherit',
-    env: { ...process.env },
-  })
-  log('info', 'Auto-reset daemon spawned', { pid: resetProc.pid })
+  function spawnDaemon({ name, script }) {
+    const proc = spawn('node', [script], { stdio: 'inherit', env: { ...process.env } })
+    procs.set(name, proc)
+    log('info', `${name} spawned`, { pid: proc.pid })
 
-  agentProc.on('exit', (code, signal) => {
-    log(code === 0 ? 'info' : 'error', 'Agents process exited', { code, signal })
-  })
-  resolveProc.on('exit', (code, signal) => {
-    log(code === 0 ? 'info' : 'error', 'Auto-resolver process exited', { code, signal })
-  })
-  resetProc.on('exit', (code, signal) => {
-    log(code === 0 ? 'info' : 'error', 'Auto-reset daemon exited', { code, signal })
-  })
+    proc.on('exit', (code, signal) => {
+      procs.delete(name)
+      if (shutdownRequested) return
+      const level = code === 0 ? 'info' : 'error'
+      log(level, `${name} exited`, { code, signal })
+      if (code !== 0 || signal) {
+        // Back-off restart: 5s after first crash, max 30s
+        const delay = 5_000
+        log('warn', `Restarting ${name} in ${delay / 1000}s...`)
+        setTimeout(() => {
+          if (!shutdownRequested) spawnDaemon({ name, script })
+        }, delay)
+      }
+    })
+    return proc
+  }
+
+  DAEMONS.forEach(spawnDaemon)
 
   // 4. Periodic relayer gas check every 5 minutes
   const gasMonitor = setInterval(async () => {
@@ -148,10 +154,11 @@ async function orchestrate() {
   // 5. Graceful shutdown
   function shutdown(signal) {
     log('info', 'Shutdown signal received', { signal })
+    shutdownRequested = true
     clearInterval(gasMonitor)
-    agentProc.kill()
-    resolveProc.kill()
-    resetProc.kill()
+    for (const proc of procs.values()) {
+      try { proc.kill() } catch { /* already dead */ }
+    }
     process.exit(0)
   }
 

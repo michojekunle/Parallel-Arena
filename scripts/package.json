@@ -5,7 +5,7 @@
   "scripts": {
     "agents": "node agents.js",
     "resolve": "node autoResolve.js",
-    "fund": "node fundAgents.js"
+    "fund": "node distributeMon.js"
   },
   "dependencies": {
     "viem": "^2.9.0",
