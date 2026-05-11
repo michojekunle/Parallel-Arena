@@ -24,7 +24,6 @@ if (!RESET_KEY || !CONTRACT_ADDRESS) {
 // RPC Fallback for resilience
 const RPC_URLS = [
   process.env.MONAD_RPC_URL || 'https://testnet-rpc.monad.xyz',
-  'https://testnet-rpc2.monad.xyz',
 ].filter(Boolean)
 
 const transport = fallback(RPC_URLS.map(url => http(url, { timeout: 10_000 })))
@@ -67,7 +66,7 @@ async function tryReset() {
       functionName: 'getFullGameState',
     })
 
-    const [, , , , , , , phase] = result as unknown[]
+    const [, , , , , , , phase] = result
     const ENDED = 2
 
     if (Number(phase) === ENDED) {
@@ -87,7 +86,7 @@ async function tryReset() {
           },
         ],
           functionName: 'resetGame',
-          gasPrice: parseGwei('250'),
+          gasPrice: parseGwei('52'),
         })
 
         const receipt = await publicClient.waitForTransactionReceipt({ hash })

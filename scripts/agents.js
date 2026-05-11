@@ -5,7 +5,7 @@
 // simultaneously. This is what Monad was built for.
 // =============================================================
 
-import { createWalletClient, createPublicClient, http, parseAbi, parseGwei } from 'viem'
+import { createWalletClient, createPublicClient, http, fallback, parseAbi, parseGwei } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { monadTestnet } from './lib/chain.js'
 import dotenv from 'dotenv'
@@ -13,7 +13,29 @@ dotenv.config()
 
 const NUM_AGENTS = parseInt(process.env.NUM_AGENTS || '10')
 const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS
-const RPC_URL = process.env.MONAD_RPC_URL
+// Master key (30+ MON) used exclusively for resolving and resetting — never for agent play
+const MASTER_KEY = process.env.PRIVATE_KEY
+
+if (!MASTER_KEY) {
+  console.error('ERROR: PRIVATE_KEY (master resolver) not set in .env')
+  process.exit(1)
+}
+
+// RPC fallback for resilience
+const RPC_URLS = [
+  process.env.MONAD_RPC_URL || 'https://testnet-rpc.monad.xyz',
+  'https://monad-testnet.drpc.org',
+].filter(Boolean)
+
+const transport = fallback(RPC_URLS.map(url => http(url, { timeout: 10_000 })))
+
+// Dedicated resolver/resetter using master account (never depletes like agents)
+const masterAccount = privateKeyToAccount(MASTER_KEY)
+const masterClient = createWalletClient({
+  account: masterAccount,
+  chain: monadTestnet,
+  transport,
+})
 
 if (!CONTRACT_ADDRESS) {
   console.error('ERROR: CONTRACT_ADDRESS not set in .env')
@@ -23,7 +45,8 @@ if (!CONTRACT_ADDRESS) {
 const ACTIONS = [1, 1, 1, 2, 3] // weighted toward attack
 const ACTION_NAMES = { 1: 'ATTACK', 2: 'DEFEND', 3: 'HEAL' }
 
-const ENTRY_FEE = 10_000_000_000_000_000n // 0.01 MON in wei
+// Entry fee read dynamically from contract on startup — avoids hardcode drift
+let ENTRY_FEE = 10_000_000_000_000_000n // 0.01 MON default, overwritten in main()
 
 // GamePhase enum values from contract
 const GamePhase = { WAITING: 0, ACTIVE: 1, ENDED: 2 }
@@ -33,8 +56,9 @@ const ABI = parseAbi([
   'function submitAction(uint8 action) external',
   'function resolveRound() external',
   'function resetGame() external',
+  'function entryFee() external view returns (uint256)',
   'function getFullGameState() external view returns (uint256 round, uint256 deadline, uint256 activePlayers, uint256 totalPlayers, bool resolved, uint256 pool, uint256 maxRounds, uint8 gamePhase, address[3] topWinners)',
-  'function getPlayer(address addr) external view returns (address addr, uint256 health, uint256 attack, uint256 defense, uint8 status, uint256 roundsPlayed, uint256 kills, uint256 rank)',
+  'function getPlayer(address addr) external view returns (address addr, uint256 health, uint256 attack, uint256 defense, uint8 status, uint256 roundsPlayed, uint256 kills, uint256 rank, uint256 consecutiveHeals)',
 ])
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
@@ -50,11 +74,11 @@ class Agent {
     this.client = createWalletClient({
       account: this.account,
       chain: monadTestnet,
-      transport: http(RPC_URL),
+      transport,
     })
     this.publicClient = createPublicClient({
       chain: monadTestnet,
-      transport: http(RPC_URL),
+      transport,
     })
     this.address = this.account.address
     this.joined = false
@@ -98,7 +122,7 @@ class Agent {
         abi: ABI,
         functionName: 'joinArena',
         value: ENTRY_FEE,
-        gasPrice: parseGwei('200'),
+        gasPrice: parseGwei('52'),
       })
       await this.publicClient.waitForTransactionReceipt({ hash })
       this.joined = true
@@ -109,7 +133,7 @@ class Agent {
         this.joined = true
         console.log(`[Agent ${this.id}] Already in arena`)
       } else {
-        console.error(`[Agent ${this.id}] Join failed:`, e.message.slice(0, 80))
+        console.error(`[Agent ${this.id}] Join failed:`, e.message.slice(0, 250))
       }
     }
   }
@@ -159,7 +183,7 @@ class Agent {
         abi: ABI,
         functionName: 'submitAction',
         args: [action],
-        gasPrice: parseGwei('200'),
+        gasPrice: parseGwei('52'),
       })
       // Don't wait for receipt — fire and move on (true parallel demo)
       console.log(`[Agent ${this.id}] 📤 Round ${round}: ${ACTION_NAMES[action]} — tx ${hash.slice(0,10)}...`)
@@ -173,7 +197,7 @@ class Agent {
         console.log(`[Agent ${this.id}] ☠ Eliminated`)
         return { success: false }
       }
-      console.error(`[Agent ${this.id}] submitAction failed:`, e.message.slice(0, 80))
+      console.error(`[Agent ${this.id}] submitAction failed:`, e.message.slice(0, 250))
       return { success: false }
     }
   }
@@ -230,36 +254,39 @@ async function actionPhase(agents, round) {
   console.log()
 }
 
-async function resolvePhase(resolverAgent, round) {
+// Shared public client for reading state and waiting for receipts
+const sharedPublicClient = createPublicClient({ chain: monadTestnet, transport })
+
+async function resolvePhase(round) {
   console.log(`\n🔨 RESOLVING ROUND ${round}...`)
   try {
-    const hash = await resolverAgent.client.writeContract({
+    const hash = await masterClient.writeContract({
       address: CONTRACT_ADDRESS,
       abi: ABI,
       functionName: 'resolveRound',
-      gasPrice: parseGwei('200'),
+      gasPrice: parseGwei('52'),
     })
-    const receipt = await resolverAgent.publicClient.waitForTransactionReceipt({ hash })
-    console.log(`✅ Round ${round} resolved in block ${receipt.blockNumber}`)
+    const rec = await sharedPublicClient.waitForTransactionReceipt({ hash })
+    console.log(`✅ Round ${round} resolved in block ${rec.blockNumber}`)
     console.log(`   All parallel actions → 1 block → done.`)
   } catch (e) {
     const skip = ['Already resolved', 'Round not ready', 'Game not active']
     if (!skip.some(s => e.message.includes(s))) {
-      console.error('Resolve failed:', e.message.slice(0, 100))
+      console.error('Resolve failed:', e.message.slice(0, 200))
     }
   }
 }
 
-async function resetPhase(resolverAgent) {
+async function resetPhase() {
   console.log('\n🔄 GAME ENDED — Resetting for next session...')
   try {
-    const hash = await resolverAgent.client.writeContract({
+    const hash = await masterClient.writeContract({
       address: CONTRACT_ADDRESS,
       abi: ABI,
       functionName: 'resetGame',
-      gasPrice: parseGwei('200'),
+      gasPrice: parseGwei('52'),
     })
-    await resolverAgent.publicClient.waitForTransactionReceipt({ hash })
+    await sharedPublicClient.waitForTransactionReceipt({ hash })
     console.log('✅ Game reset — new session ready')
   } catch (e) {
     if (!e.message.includes('Game not ended')) {
@@ -286,16 +313,21 @@ async function main() {
   console.log(`║     ${NUM_AGENTS} AI agents entering the arena  ║`)
   console.log('╚═══════════════════════════════════════╝\n')
 
+  // Read entry fee from contract so we never pay wrong amount after an owner update
+  try {
+    ENTRY_FEE = await sharedPublicClient.readContract({
+      address: CONTRACT_ADDRESS, abi: ABI, functionName: 'entryFee',
+    })
+    console.log(`Entry fee: ${ENTRY_FEE} wei (${Number(ENTRY_FEE) / 1e18} MON)`)
+  } catch (e) {
+    console.warn('Could not read entryFee — using default 0.01 MON:', e.message)
+  }
+
   const agents = await loadAgents()
   if (agents.length === 0) {
     console.error('No agents found. Check your .env file.')
     process.exit(1)
   }
-
-  const publicClient = createPublicClient({
-    chain: monadTestnet,
-    transport: http(RPC_URL),
-  })
 
   let lastRound = -1
   let lastPhase = -1
@@ -305,7 +337,7 @@ async function main() {
 
   while (true) {
     try {
-      const state = await getFullState(publicClient)
+      const state = await getFullState(sharedPublicClient)
       const round    = Number(state[0])
       const deadline = state[1]
       const resolved = state[4]
@@ -317,7 +349,7 @@ async function main() {
           console.log('\n🏆 GAME OVER — top 3 winners set on-chain')
           lastPhase = GamePhase.ENDED
           await sleep(3000) // brief pause before auto-reset
-          await resetPhase(agents[0])
+          await resetPhase()
           // Reset local agent state so they re-join next iteration
           agents.forEach(a => a.reset())
           lastRound = -1
@@ -347,11 +379,7 @@ async function main() {
         await actionPhase(agents, round)
       }
 
-      // Auto-resolve when deadline passes
-      const now = BigInt(Math.floor(Date.now() / 1000))
-      if (!resolved && deadline > 0n && now >= deadline) {
-        await resolvePhase(agents[0], round)
-      }
+      // Resolution is handled exclusively by autoResolve.js to avoid race conditions.
 
     } catch (err) {
       console.error('Network error:', err.message.slice(0, 100))
