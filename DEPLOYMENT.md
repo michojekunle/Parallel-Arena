@@ -1,266 +1,282 @@
-# Parallel Arena — MVP Deployment Guide
+# Parallel Arena — Testing & Deployment Guide
 
-Deploy your game in under 30 minutes for **free frontend + $5/mo orchestrator**.
+## Architecture Overview
+
+```
+contracts/     Solidity (Foundry) — ParallelArenaV2
+scripts/       Node.js orchestrator + AI agent swarm
+frontend/      Next.js 14 app (wagmi + viem)
+```
+
+**Live contract**: `0x14b4ee569a9be97e0e0feE136eaffebd36228601` on Monad Testnet (chainId 10143)
 
 ---
 
-## Part 1: Frontend (Vercel) — 5 minutes
+## 1. Prerequisites
 
-### 1.1 Push to GitHub
-
-```bash
-cd /Users/mac/prog/hacks/2026/Parallel\ Arena
-git add .
-git commit -m "feat: session keys auto-enable, visual effects, auto-reset daemon"
-git push origin main
-```
-
-### 1.2 Deploy to Vercel
-
-```bash
-npm install -g vercel
-vercel --prod
-```
-
-Or go to **[vercel.com](https://vercel.com)**, connect GitHub, import repo, deploy.
-
-**Environment variables in Vercel dashboard:**
-```
-NEXT_PUBLIC_RPC_URL=https://testnet-rpc.monad.xyz
-RELAYER_PRIVATE_KEY=(your relayer key)
-CONTRACT_ADDRESS=(your contract address)
-```
-
-Result: **Your game is live at `yourgame.vercel.app`** ✅
+| Tool | Version | Install |
+|------|---------|---------|
+| Node.js | ≥ 18 | `nvm install 18` |
+| Foundry | latest | `curl -L https://foundry.paradigm.xyz \| bash && foundryup` |
+| Git | any | — |
 
 ---
 
-## Part 2: Orchestrator VPS (DigitalOcean/Hetzner) — 15 minutes
-
-### 2.1 Create VPS
-
-**DigitalOcean:**
-1. Sign up → Create droplet ($5/mo)
-2. Choose: Ubuntu 22.04 LTS, smallest size, region closest to you
-3. SSH key auth recommended
-
-**Hetzner:**
-- €2.49/mo, same steps
-
-### 2.2 SSH into your VPS
+## 2. Environment Setup
 
 ```bash
-ssh root@<your-vps-ip>
-```
-
-### 2.3 Install Node.js + Git
-
-```bash
-apt update && apt install -y nodejs npm git
-node --version  # verify
-```
-
-### 2.4 Clone repo on VPS
-
-```bash
-cd /root
-git clone https://github.com/yourusername/parallel-arena.git
+# Clone and install
+git clone <repo>
 cd parallel-arena
-npm install
+npm install                         # orchestrator deps
+cd frontend && npm install          # frontend deps
+cd ../contracts && forge install    # solidity deps
+
+# Copy and fill env
+cp .env.example .env
 ```
 
-### 2.5 Setup `.env` on VPS
+### Required `.env` keys
 
 ```bash
-cat > .env << 'EOF'
-PRIVATE_KEY=your_master_key_here
-RELAYER_PRIVATE_KEY=your_relayer_key_here
-RESET_KEY=your_master_key_here
-RESOLVER_KEY=your_agent_key_0_or_separate_key
-AGENT_KEY_0=agent_0_key
-AGENT_KEY_1=agent_1_key
-AGENT_KEY_2=agent_2_key
-CONTRACT_ADDRESS=your_contract_address
+# ── Chain ──────────────────────────────────────────────────────────────────
 MONAD_RPC_URL=https://testnet-rpc.monad.xyz
-EOF
+CONTRACT_ADDRESS=0x14b4ee569a9be97e0e0feE136eaffebd36228601
+
+# ── Master account (deployer + resolver + resetter) ───────────────────────
+# Must hold ≥ 5 MON before starting.
+# Testnet MON faucet: https://faucet.monad.xyz
+PRIVATE_KEY=0x<your-64-char-hex-key>
+
+# ── Relayer (used by the frontend /api/relay endpoint) ────────────────────
+# Can be the same as PRIVATE_KEY for single-machine setups.
+RELAYER_ADDRESS=0x<relayer-public-address>
+
+# ── Agent wallets (10 required for a full 10-agent swarm) ────────────────
+# Each needs ≥ 1 MON. balanceManager.js tops them up automatically.
+NUM_AGENTS=10
+AGENT_KEY_0=0x...
+AGENT_KEY_1=0x...
+# ... through AGENT_KEY_9
+
+# ── Frontend Next.js env (separate file: frontend/.env.local) ─────────────
+NEXT_PUBLIC_CONTRACT_ADDRESS=0x14b4ee569a9be97e0e0feE136eaffebd36228601
+NEXT_PUBLIC_RPC_URL=https://testnet-rpc.monad.xyz
+RELAYER_PRIVATE_KEY=0x<relayer-private-key>   # server-only, never exposed
 ```
 
-### 2.6 Test scripts locally
-
-```bash
-node scripts/orchestrate.js  # should start agents + resolver
-# Wait 10s, then Ctrl+C to stop
-```
-
-### 2.7 Setup systemd auto-start
-
-```bash
-cat > /etc/systemd/system/parallel-arena.service << 'EOF'
-[Unit]
-Description=Parallel Arena Orchestrator
-After=network.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/root/parallel-arena
-ExecStart=/usr/bin/node scripts/orchestrate.js
-Restart=always
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-EOF
-```
-
-### 2.8 Enable + start
-
-```bash
-systemctl daemon-reload
-systemctl enable parallel-arena
-systemctl start parallel-arena
-systemctl status parallel-arena  # should be "active (running)"
-```
-
-### 2.9 View logs
-
-```bash
-journalctl -u parallel-arena -f  # tail logs in real-time
-```
+> **Security**: Never commit `.env` or `.env.local`. Both are in `.gitignore`.
 
 ---
 
-## Part 3: Domain + HTTPS (optional, 5 minutes)
+## 3. Running Tests
 
-### 3.1 Point domain to Vercel
+### Frontend unit tests — 64 tests, all passing
 
-In your domain registrar (GoDaddy, Namecheap, etc):
-- Add CNAME: `yourdomain.com` → `cname.vercel.sh`
+```bash
+cd frontend
+npm test                    # run all tests once
+npm run test:watch          # watch mode during development
+npm run test:coverage       # with per-file coverage report
+```
 
-Vercel auto-provisions HTTPS.
+**Test files and what they cover**:
 
-### 3.2 Custom domain on Vercel dashboard
+| File | What it verifies |
+|------|-----------------|
+| `lib/__tests__/types.test.ts` | Enum values match Solidity (ATTACK=1, DEAD=2, etc.) |
+| `lib/__tests__/constants.test.ts` | ≥2 RPC URLs, correct chain ID 10143, SHORT_ADDR format |
+| `lib/__tests__/eip712.test.ts` | Domain name = `ParallelArenaV2`, field order, `action` is `uint8` |
+| `lib/__tests__/contract.test.ts` | ABI has all functions, no deprecated V1 `getGameState`, Player struct has `consecutiveHeals` |
+| `lib/__tests__/gameLogic.test.ts` | Attack target selection, `canAct` guard, HP math (damage/heal/clamp) |
+| `lib/__tests__/sessionKeyCrypto.test.ts` | AES-GCM roundtrip, IV randomness, tamper detection, wrong-address rejection |
+| `api/relay/__tests__/rateLimit.test.ts` | 10/60s window, per-IP isolation, sliding window, eviction |
 
-Settings → Domains → Add `yourdomain.com`
+### Contract tests (Foundry)
+
+```bash
+cd contracts
+forge test -vv                                    # all tests
+forge test -vv --match-test testJoinArena        # single test
+forge test -vv --match-contract ParallelArena    # single contract
+forge coverage                                    # coverage report
+```
+
+### Manual end-to-end smoke test
+
+```bash
+# Terminal 1: frontend
+cd frontend && npm run dev
+
+# Terminal 2: agent swarm (optional — creates game traffic)
+npm run arena
+```
+
+Then in browser at `http://localhost:3000`:
+1. Connect a wallet (MetaMask with Monad testnet, chainId 10143)
+2. Click **JOIN GAME (0.01 MON)** → confirms 1 on-chain tx, then auto-authorizes session key
+3. Click **ATTACK / DEFEND / HEAL** → no wallet pop-up (gasless EIP-712 signature)
+4. Watch the parallel visualization panel — actions appear as lanes firing simultaneously
+5. After deadline, round resolves → HP changes appear in player grid + battle log
+6. After 5 rounds, end-game modal shows winners + replay viewer
+7. Winners click **CLAIM PRIZE** → gasless signature, relay submits on-chain
 
 ---
 
-## Part 4: Verification Checklist
+## 4. Running the Agent Swarm (Local Dev)
 
-- [ ] Frontend loads at `yourgame.vercel.app`
-- [ ] Connect wallet → session key auto-authorizes (no popup)
-- [ ] Play a game → visual effects work (fire 🔥, heal 💚, shield 🛡️)
-- [ ] Game auto-resets after completion
-- [ ] Leaderboard updates with new games
-- [ ] VPS logs show agents joining and resolving
-
-Check VPS logs:
 ```bash
-journalctl -u parallel-arena -n 50  # last 50 lines
+# One-time: fund agents (needs PRIVATE_KEY with ≥ 12 MON)
+node scripts/distributeMon.js
+
+# Verify balances
+node scripts/checkBalances.js
+
+# Start full orchestrator (manages all 4 daemons with auto-restart)
+npm run arena
+
+# Structured NDJSON logs — pipe to file in production:
+npm run arena >> logs/arena.ndjson 2>&1
 ```
+
+**What each daemon does**:
+
+| Daemon | Script | Responsibility |
+|--------|--------|---------------|
+| agents | `agents.js` | 10 AI agents join arena, submit parallel actions each round |
+| autoResolve | `autoResolve.js` | Calls `resolveRound()` when deadline passes (master key) |
+| autoReset | `autoReset.js` | Calls `resetGame()` after ENDED phase (owner bypass = instant) |
+| balanceMgr | `balanceManager.js` | Rebalances agent wallets every 90s when any < 0.3 MON |
+
+All daemons auto-restart after crashes with a 5s backoff. The orchestrator itself handles SIGINT/SIGTERM gracefully.
 
 ---
 
-## Part 5: Monitoring (Optional)
+## 5. Deploying a New Contract
 
-### Keep VPS alive in SSH session (tmux)
+Only do this if `ParallelArenaV2.sol` is modified.
 
 ```bash
-# On VPS
-apt install -y tmux
-tmux new-session -d -s arena "cd /root/parallel-arena && node scripts/orchestrate.js"
-tmux ls  # see sessions
-tmux attach -t arena  # view logs
+cd contracts
+
+# Run tests first
+forge test -vv
+
+# Dry run (simulate, no broadcast)
+forge script script/DeployV2.s.sol \
+  --rpc-url $MONAD_RPC_URL \
+  --private-key $PRIVATE_KEY \
+  -vvvv
+
+# Deploy (broadcast submits the tx)
+forge script script/DeployV2.s.sol \
+  --rpc-url $MONAD_RPC_URL \
+  --private-key $PRIVATE_KEY \
+  --broadcast -vvvv
 ```
 
-### Get alerts when relayer runs low on gas
-
-Update VPS `.env`:
-```bash
-RELAYER_ADDRESS=your_relayer_address
-```
-
-Orchestrator now logs gas warnings to stdout.
+After deployment:
+1. Copy the deployed address from console output
+2. Update `CONTRACT_ADDRESS` in root `.env`
+3. Update `NEXT_PUBLIC_CONTRACT_ADDRESS` in `frontend/.env.local`
+4. Update `NEXT_PUBLIC_CONTRACT_ADDRESS` in Vercel environment variables (if deployed)
+5. Restart orchestrator: `pm2 restart arena-orchestrator`
+6. Redeploy frontend (Vercel auto-deploys on push)
 
 ---
 
-## Part 6: Troubleshooting
+## 6. Deploying the Frontend (Vercel)
 
-### "Wallet popups on every action"
-
-→ Session keys not auto-authorizing. Verify:
 ```bash
-localStorage  # in browser devtools
-# Should see "session_key_enc_0x..." (encrypted), NOT "session_key_0x..." (plaintext)
+cd frontend
+npm run build    # verify build is clean before pushing
 ```
 
-If plaintext, clear localStorage and reload.
+In Vercel dashboard:
+1. Import the `frontend/` subdirectory (set root to `frontend/`)
+2. Add environment variables:
+   - `NEXT_PUBLIC_CONTRACT_ADDRESS` = `0x14b4ee569a9be97e0e0feE136eaffebd36228601`
+   - `NEXT_PUBLIC_RPC_URL` = `https://testnet-rpc.monad.xyz`
+   - `RELAYER_PRIVATE_KEY` = `0x...` ← **server-only**, Vercel keeps this secret
+3. Deploy → Vercel auto-redeploys on every push to main
 
-### "No agents joining"
-
-Check VPS logs:
-```bash
-journalctl -u parallel-arena -n 20
-```
-
-Likely: missing `AGENT_KEY_n` variables. Add them to `.env` and restart:
-```bash
-systemctl restart parallel-arena
-```
-
-### "Games not resetting"
-
-Auto-reset script needs `resetGame()` permission. Ensure `RESET_KEY` is funded with gas:
-```bash
-# On VPS, check balance of RESET_KEY:
-node -e "console.log(require('ethers').utils.getAddress('0x...'))"
-```
-
-Refund it if dry.
-
-### "Relayer gas too low"
-
-Manually top up from master account:
-```bash
-node scripts/fundAgents.js  # also funds relayer
-```
+The relay endpoint (`/api/relay`) is a serverless function with 10 req/min/IP rate limiting. The relayer private key never reaches the browser.
 
 ---
 
-## Cost Breakdown (Monthly)
+## 7. Running the Orchestrator in Production
 
-| Component | Cost | Provider |
-|-----------|------|----------|
-| Frontend | **Free** | Vercel (free tier) |
-| Orchestrator VPS | **$5** | DigitalOcean or €2.49 (Hetzner) |
-| Gas (txs) | **Variable** | Monad testnet (free) |
-| Domain | **~$10** | GoDaddy, etc. |
-| **TOTAL** | **~$15/mo** | |
-
----
-
-## Next Steps
-
-1. **Visual polish**: Add more effects in `frontend/src/components/AttackEffect.tsx`, `HealEffect.tsx`, `DefendEffect.tsx`
-2. **Player tracking**: Deploy The Graph indexer for better leaderboard queries
-3. **Mobile**: Test on phones; consider adding "Add to Home Screen" PWA manifest
-4. **Mainnet**: Redeploy contract on Monad mainnet, swap testnet RPC URLs
-
----
-
-## Monitoring Dashboard (DIY)
-
-Create a simple health check endpoint on your VPS:
+Use `pm2` for process management:
 
 ```bash
-# Add to cron
-*/5 * * * * curl http://yourgame.vercel.app/api/health >> /var/log/health.log
+npm install -g pm2
+
+# Start
+pm2 start "node scripts/orchestrate.js" \
+  --name arena-orchestrator \
+  --log logs/arena.log
+
+# Persist across reboots
+pm2 save && pm2 startup
+
+# Monitor
+pm2 logs arena-orchestrator --lines 50
+pm2 monit
 ```
 
-Or use free services like **UptimeRobot** to ping your frontend every 5 minutes.
+The orchestrator already handles daemon crashes (auto-restart with 5s backoff). `pm2` handles the outer process crash.
 
 ---
 
-**You're live! 🚀 Share your `yourgame.vercel.app` link.**
+## 8. Health Checks & Monitoring
+
+**Frontend health endpoint** (used by load balancers):
+```bash
+curl https://your-domain.com/api/health
+# → {"status":"ok","contract":"0x14b4...","rpcs":[{"url":"...","ok":true,"blockNumber":"..."},...]}
+```
+
+**Agent balance check**:
+```bash
+node scripts/checkBalances.js
+```
+
+**Orchestrator balance alerts**:
+- `level:"warn"` — master balance < 2 MON
+- `level:"error"` — master balance < 0.5 MON (resolver will fail soon)
+
+When the error fires: top up `PRIVATE_KEY` address with testnet MON from the faucet.
+
+---
+
+## 9. Troubleshooting
+
+| Symptom | Root cause | Fix |
+|---------|-----------|-----|
+| `"Signer had insufficient balance"` | Agent wallet < gas for tx | Run `node scripts/distributeMon.js` |
+| `"Wrong entry fee"` | Hardcoded fee drifted from contract | Fixed: agents.js reads `entryFee()` on startup |
+| Gasless submit always reverts | EIP-712 domain name mismatch | Fixed: domain is `ParallelArenaV2` |
+| Player HP/stats wrong after fetch | Missing ABI struct field | Fixed: `consecutiveHeals` in ABI + TS interface |
+| autoResolve `execution reverted` | Calling deprecated V1 function | Fixed: uses `getFullGameState()` |
+| Frontend gets 429 | Relay rate limit (10/60s/IP) | Wait 60s; or raise `RATE_MAX` in `route.ts` |
+| Frontend blank on RPC outage | Single-RPC transport | Fixed: all clients use `fallback()` |
+| autoReset crashes immediately | TypeScript syntax in Node.js | Fixed: removed `as unknown[]` cast |
+| Race condition: double-resolve | Both agents.js + autoResolve calling resolveRound | Fixed: resolve only in autoResolve.js |
+
+---
+
+## 10. Reference
+
+| Resource | URL |
+|----------|-----|
+| Monad Testnet Explorer | https://testnet.monadexplorer.com |
+| Monad Faucet | https://faucet.monad.xyz |
+| Primary RPC | `https://testnet-rpc.monad.xyz` |
+| Fallback RPC | `https://monad-testnet.drpc.org` |
+| Contract (deployed) | `0x14b4ee569a9be97e0e0feE136eaffebd36228601` |
+| Chain ID | `10143` |
+| EIP-712 domain name | `ParallelArenaV2` |
+| Entry fee | `0.01 MON` (readable from `entryFee()` on-chain) |
+| Round duration | `30 seconds` |
+| Max rounds | `5` |
+| Max players per game | `32` |
