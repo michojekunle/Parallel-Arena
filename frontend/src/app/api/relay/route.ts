@@ -82,7 +82,7 @@ export async function POST(request: Request): Promise<Response> {
         abi: ABI,
         functionName: 'submitActionWithPermit',
         args: [player, body.action, BigInt(nonce), BigInt(deadline), v, r, s],
-        gasPrice: parseGwei('250'),
+        gasPrice: parseGwei('52'),
       })
     } else if (type === 'claim') {
       hash = await walletClient.writeContract({
@@ -90,7 +90,7 @@ export async function POST(request: Request): Promise<Response> {
         abi: ABI,
         functionName: 'claimPrizeWithPermit',
         args: [player, BigInt(nonce), BigInt(deadline), v, r, s],
-        gasPrice: parseGwei('250'),
+        gasPrice: parseGwei('52'),
       })
     } else {
       return Response.json({ error: 'Unknown relay type' }, { status: 400 })
