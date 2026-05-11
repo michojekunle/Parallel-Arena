@@ -103,7 +103,7 @@ export function useAgent(): AgentState {
         functionName: 'registerAgent',
         args: [agentAddress, strategy],
         value: total,
-        gasPrice: parseGwei('250'),
+        gasPrice: parseGwei('52'),
       })
       await publicClient.waitForTransactionReceipt({ hash })
       await refresh()
@@ -131,7 +131,7 @@ export function useAgent(): AgentState {
         functionName: 'depositAgent',
         args: [myAgentAddress],
         value: parseEther(depositMON),
-        gasPrice: parseGwei('250'),
+        gasPrice: parseGwei('52'),
       })
       await publicClient.waitForTransactionReceipt({ hash })
       await refresh()

@@ -189,9 +189,13 @@ export function Arena(): React.ReactElement {
       )}
 
       {/* Header */}
-      <header className="border-b border-[#1a1a1a] px-4 sm:px-6 py-3 flex items-center justify-between sticky top-0 bg-black z-40">
-        <div className="flex items-center gap-3 sm:gap-5 min-w-0">
-          <h1 className="text-base lg:text-xl font-black tracking-tighter whitespace-nowrap cursor-pointer" onClick={() => setIsTourOpen(true)}>
+      <header className="border-b border-[#1a1a1a] px-3 sm:px-6 py-2 sm:py-3 flex items-center justify-between sticky top-0 bg-black z-40 gap-2">
+        {/* Left: logo + nav links */}
+        <div className="flex items-center gap-2 sm:gap-5 min-w-0 flex-shrink-0">
+          <h1
+            className="text-sm sm:text-base lg:text-xl font-black tracking-tighter whitespace-nowrap cursor-pointer"
+            onClick={() => setIsTourOpen(true)}
+          >
             PARALLEL<span className="text-[#555] font-light ml-1 lowercase">arena</span>
           </h1>
           <button
@@ -208,9 +212,11 @@ export function Arena(): React.ReactElement {
           </a>
         </div>
 
-        <div className="flex items-center gap-2 sm:gap-4">
+        {/* Right: stats + wallet */}
+        <div className="flex items-center gap-1.5 sm:gap-3 lg:gap-4 min-w-0">
+          {/* Prize pool — hidden on mobile */}
           {prizePool > 0n && (
-            <div className="hidden sm:flex items-center gap-1.5 border border-[#FDBA74]/30 px-2 py-1">
+            <div className="hidden sm:flex items-center gap-1.5 border border-[#FDBA74]/30 px-2 py-1 flex-shrink-0">
               <span className="text-[8px] lg:text-[10px] text-[#555] uppercase tracking-widest">POOL</span>
               <span className="text-[10px] lg:text-sm font-bold font-mono text-[#FDBA74]">
                 {formatEther(prizePool)} MON
@@ -218,29 +224,41 @@ export function Arena(): React.ReactElement {
             </div>
           )}
 
+          {/* Agents toggle */}
           {isConnected && (
             <button
               onClick={() => setShowAgents(v => !v)}
-              className={`hidden sm:flex items-center gap-1.5 border px-2 py-1 text-[9px] font-bold uppercase tracking-widest transition-colors ${
+              className={`flex items-center gap-1 sm:gap-1.5 border px-2 py-1.5 text-[9px] font-bold uppercase tracking-widest transition-colors flex-shrink-0 ${
                 showAgents
                   ? 'border-[#26D962]/60 text-[#26D962] bg-[#26D962]/5'
                   : 'border-[#333] text-[#555] hover:border-[#555] hover:text-[#888]'
               }`}
             >
               <span>🤖</span>
-              <span>AGENTS</span>
+              <span className="hidden sm:inline">AGENTS</span>
             </button>
           )}
 
+          {/* Game stats — combined on mobile, expanded on sm+ */}
           {gameState && (
-            <div className="flex items-center gap-2 sm:gap-4">
-              <div className="text-center">
+            <div className="flex items-center gap-1.5 sm:gap-3 lg:gap-4 flex-shrink-0">
+              {/* Mobile: single compact "R1 · 30s" label */}
+              <div className="sm:hidden flex items-center gap-1 font-mono text-[10px] font-bold">
+                <span className="text-[#555]">R{gameState.round.toString()}</span>
+                <span className="text-[#333]">·</span>
+                <span style={{ color: timeRemaining <= 10 ? '#EE0000' : '#fff' }}>
+                  {timeRemaining}s
+                </span>
+              </div>
+
+              {/* sm+: individual stat columns */}
+              <div className="hidden sm:block text-center">
                 <div className="text-[9px] lg:text-[11px] text-[#555] uppercase tracking-widest font-bold">RND</div>
                 <div className="text-xs lg:text-base font-bold font-mono">
                   {gameState.round.toString()}<span className="text-[#333]">/{maxRounds.toString()}</span>
                 </div>
               </div>
-              <div className="text-center">
+              <div className="hidden sm:block text-center">
                 <div className="text-[9px] lg:text-[11px] text-[#555] uppercase tracking-widest font-bold">TIME</div>
                 <div
                   className="text-xs lg:text-base font-bold tabular-nums font-mono"
@@ -257,10 +275,29 @@ export function Arena(): React.ReactElement {
               </div>
             </div>
           )}
+
           <BackgroundMusic />
           <WalletConnect />
         </div>
       </header>
+
+      {/* Mobile agents overlay — full screen, only on < md */}
+      {showAgents && isConnected && (
+        <div className="md:hidden fixed inset-0 z-50 bg-black overflow-y-auto flex flex-col">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-[#1a1a1a] sticky top-0 bg-black z-10">
+            <span className="text-[11px] font-bold uppercase tracking-[0.2em]">🤖 AI AGENTS</span>
+            <button
+              onClick={() => setShowAgents(false)}
+              className="text-[#555] hover:text-white transition-colors text-lg leading-none px-1"
+            >
+              ✕
+            </button>
+          </div>
+          <div className="flex-1">
+            <AgentPanel myAddress={address} />
+          </div>
+        </div>
+      )}
 
       {/* Main content */}
       <div className="flex-1 flex flex-col md:grid md:grid-cols-[1fr_360px] overflow-hidden">
