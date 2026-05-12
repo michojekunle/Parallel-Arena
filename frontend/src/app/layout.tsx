@@ -35,8 +35,10 @@ export default function RootLayout({
           config={{
             appearance: {
               theme: 'dark',
-              accentColor: '#FFFFFF',
+              accentColor: '#26D962', // toxic green accent for the arena
               logo: '/logo.png',
+              showWalletLoginFirst: true,
+              walletChainType: 'ethereum-only',
             },
             embeddedWallets: {
               ethereum: {
