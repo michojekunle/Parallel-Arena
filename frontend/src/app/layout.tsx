@@ -2,14 +2,14 @@
 
 import './globals.css'
 import '@/styles/animations.css'
-import '@rainbow-me/rainbowkit/styles.css'
-import { WagmiProvider, createConfig, http, fallback } from 'wagmi'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { RainbowKitProvider, darkTheme } from '@rainbow-me/rainbowkit'
 import { monadTestnet, RPC_URLS } from '@/lib/constants'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
+import { PrivyProvider } from '@privy-io/react-auth'
+import { WagmiProvider, createConfig } from '@privy-io/wagmi'
+import { http, fallback } from 'wagmi'
 
-const config = createConfig({
+const wagmiConfig = createConfig({
   chains: [monadTestnet],
   transports: {
     [monadTestnet.id]: fallback(RPC_URLS.map(url => http(url, { timeout: 8_000 }))),
@@ -30,22 +30,30 @@ export default function RootLayout({
         <meta name="description" content="Parallel execution visualizer" />
       </head>
       <body>
-        <WagmiProvider config={config}>
+        <PrivyProvider
+          appId={process.env.NEXT_PUBLIC_PRIVY_APP_ID || 'your-privy-app-id'}
+          config={{
+            appearance: {
+              theme: 'dark',
+              accentColor: '#FFFFFF',
+              logo: '/logo.png',
+            },
+            embeddedWallets: {
+              ethereum: {
+                createOnLogin: 'users-without-wallets',
+              },
+            },
+            supportedChains: [monadTestnet],
+          }}
+        >
           <QueryClientProvider client={queryClient}>
-            <RainbowKitProvider
-              theme={darkTheme({
-                accentColor: '#FFFFFF',
-                accentColorForeground: '#000000',
-                borderRadius: 'small',
-                fontStack: 'system',
-              })}
-            >
+            <WagmiProvider config={wagmiConfig}>
               <ErrorBoundary>
                 {children}
               </ErrorBoundary>
-            </RainbowKitProvider>
+            </WagmiProvider>
           </QueryClientProvider>
-        </WagmiProvider>
+        </PrivyProvider>
       </body>
     </html>
   )
