@@ -12,11 +12,8 @@
   },
   "dependencies": {
     "@ducanh2912/next-pwa": "^10.2.9",
-    "@farcaster/frame-sdk": "^0.0.64",
-    "@farcaster/mini-app-solana": "^0.0.20",
     "@privy-io/react-auth": "^3.24.0",
     "@privy-io/wagmi": "^4.0.7",
-    "@solana/wallet-adapter-react": "^0.15.39",
     "@tanstack/react-query": "^5.0.0",
     "clsx": "^2.1.0",
     "framer-motion": "^11.18.2",
