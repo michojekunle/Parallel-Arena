@@ -16,7 +16,6 @@
     "@farcaster/mini-app-solana": "^0.0.20",
     "@privy-io/react-auth": "^3.24.0",
     "@privy-io/wagmi": "^4.0.7",
-    "@rainbow-me/rainbowkit": "^2.1.0",
     "@solana/wallet-adapter-react": "^0.15.39",
     "@tanstack/react-query": "^5.0.0",
     "clsx": "^2.1.0",

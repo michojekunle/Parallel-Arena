@@ -7,7 +7,11 @@ import { motion, AnimatePresence } from 'framer-motion'
 
 export function WalletConnect(): React.ReactElement {
   const { login, logout, authenticated, ready, linkWallet, user } = usePrivy()
-  const { address, chain } = useAccount()
+  const { address: wagmiAddress, chain } = useAccount()
+
+  // Privy embedded wallet address as fallback while wagmi syncs
+  const privyAddress = user?.wallet?.address as `0x${string}` | undefined
+  const address = wagmiAddress ?? privyAddress
   const [mounted, setMounted] = useState(false)
   const [isDropdownOpen, setIsDropdownOpen] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
@@ -45,7 +49,8 @@ export function WalletConnect(): React.ReactElement {
     )
   }
 
-  const isUnsupported = chain?.id !== 10143
+  // Only flag wrong network when chain is known — undefined means still loading
+  const isUnsupported = !!chain && chain.id !== 10143
   const shortAddr = address
     ? `${address.slice(0, 6)}…${address.slice(-4)}`
     : 'Unknown'
