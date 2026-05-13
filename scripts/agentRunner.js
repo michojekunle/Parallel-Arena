@@ -13,7 +13,7 @@
 //   3. Run: node scripts/agentRunner.js
 // =============================================================
 
-import { createWalletClient, createPublicClient, http, parseAbi, parseGwei } from 'viem'
+import { createWalletClient, createPublicClient, http, fallback, parseAbi, parseGwei } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { monadTestnet } from './lib/chain.js'
 import dotenv from 'dotenv'
@@ -21,7 +21,11 @@ dotenv.config()
 
 const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS
 const RELAYER_KEY      = process.env.RELAYER_PRIVATE_KEY
-const RPC_URL          = process.env.MONAD_RPC_URL || 'https://testnet-rpc.monad.xyz'
+const RPC_URLS = [
+  process.env.MONAD_RPC_URL || 'https://testnet-rpc.monad.xyz',
+  'https://monad-testnet.drpc.org',
+].filter(Boolean)
+const RPC_URL = RPC_URLS[0]
 const NUM_AGENTS       = parseInt(process.env.NUM_AGENTS || '10')
 
 if (!CONTRACT_ADDRESS) { console.error('ERROR: CONTRACT_ADDRESS not set'); process.exit(1) }
@@ -220,7 +224,7 @@ class Agent {
         abi: ABI,
         functionName: 'submitActionWithPermit',
         args: [this.address, action, nonce, deadline, v, r, s],
-        gasPrice: parseGwei('200'),
+        gasPrice: parseGwei('52'),
       })
       console.log(`[Agent ${this.id}] 📤 Round ${round}: ${ACTION_NAMES[action]} tx ${hash.slice(0, 10)}…`)
       return { success: true, hash, action }
@@ -315,7 +319,7 @@ async function joinPhase(agents, walletClient, publicClient) {
         // Relayer calls agentJoinArena (deducts from agent's on-chain balance)
         hash = await walletClient.writeContract({
           address: CONTRACT_ADDRESS, abi: ABI, functionName: 'agentJoinArena',
-          args: [agent.address], gasPrice: parseGwei('200'),
+          args: [agent.address], gasPrice: parseGwei('52'),
         })
       } else {
         // Unregistered: agent sends joinArena directly from its own wallet
@@ -324,7 +328,7 @@ async function joinPhase(agents, walletClient, publicClient) {
         })
         hash = await agentWalletClient.writeContract({
           address: CONTRACT_ADDRESS, abi: ABI, functionName: 'joinArena',
-          value: ENTRY_FEE, gasPrice: parseGwei('200'),
+          value: ENTRY_FEE, gasPrice: parseGwei('52'),
         })
       }
 
@@ -365,7 +369,7 @@ async function resolvePhase(walletClient, publicClient, round) {
   console.log(`\n🔨 RESOLVING ROUND ${round}…`)
   try {
     const hash = await walletClient.writeContract({
-      address: CONTRACT_ADDRESS, abi: ABI, functionName: 'resolveRound', gasPrice: parseGwei('200'),
+      address: CONTRACT_ADDRESS, abi: ABI, functionName: 'resolveRound', gasPrice: parseGwei('52'),
     })
     const receipt = await publicClient.waitForTransactionReceipt({ hash })
     console.log(`✅ Round ${round} resolved in block ${receipt.blockNumber}`)
@@ -396,7 +400,7 @@ async function resetPhase(walletClient, publicClient) {
   console.log('\n🔄 GAME ENDED — Resetting…')
   try {
     const hash = await walletClient.writeContract({
-      address: CONTRACT_ADDRESS, abi: ABI, functionName: 'resetGame', gasPrice: parseGwei('200'),
+      address: CONTRACT_ADDRESS, abi: ABI, functionName: 'resetGame', gasPrice: parseGwei('52'),
     })
     await publicClient.waitForTransactionReceipt({ hash })
     console.log('✅ Game reset — new session starting')

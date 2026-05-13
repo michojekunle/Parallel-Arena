@@ -67,7 +67,7 @@ async function tryResolve() {
         address: CONTRACT_ADDRESS,
         abi: ABI,
         functionName: 'resolveRound',
-        gasPrice: parseGwei('200'),
+        gasPrice: parseGwei('52'),
       })
       const receipt = await publicClient.waitForTransactionReceipt({ hash })
       console.log(`[AutoResolve] ✅ Round ${round} resolved in block ${receipt.blockNumber}`)

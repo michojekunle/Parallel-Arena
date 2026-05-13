@@ -96,7 +96,7 @@ async function orchestrate() {
         const hash = await walletClient.sendTransaction({
           to: acc.address,
           value: AGENT_TOPUP,
-          gasPrice: parseGwei('250'),
+          gasPrice: parseGwei('52'),
         })
         await publicClient.waitForTransactionReceipt({ hash })
         log('info', 'Agent topped up', { address: acc.address, amount: formatEther(AGENT_TOPUP), hash })
