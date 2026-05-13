@@ -1,16 +1,17 @@
 'use client'
 
 import { useState, useCallback, useEffect } from 'react'
-import { createPublicClient, http, parseEther } from 'viem'
+import { createPublicClient, http, fallback, parseEther, parseGwei } from 'viem'
 import { useWalletClient, useAccount } from 'wagmi'
-import { parseGwei } from 'viem'
 import { ABI, CONTRACT_ADDRESS, AGENT_CREATION_FEE } from '@/lib/contract'
-import { monadTestnet } from '@/lib/constants'
+import { monadTestnet, RPC_URLS } from '@/lib/constants'
 import { AgentInfo, AgentStrategy } from '@/lib/types'
 
+// Use the same fallback transport as the rest of the app — a single URL
+// would silently drop agent queries if the primary RPC is unavailable.
 const publicClient = createPublicClient({
   chain: monadTestnet,
-  transport: http(process.env.NEXT_PUBLIC_RPC_URL || 'https://testnet-rpc.monad.xyz'),
+  transport: fallback(RPC_URLS.map(url => http(url, { timeout: 10_000 }))),
 })
 
 export interface AgentState {
@@ -149,7 +150,7 @@ export function useAgent(): AgentState {
     try {
       const fn = myAgentInfo.active ? 'deactivateAgent' : 'activateAgent'
       const hash = await walletClient.writeContract({
-        address: CONTRACT_ADDRESS, abi: ABI, functionName: fn, gasPrice: parseGwei('250'),
+        address: CONTRACT_ADDRESS, abi: ABI, functionName: fn, gasPrice: parseGwei('52'),
       })
       await publicClient.waitForTransactionReceipt({ hash })
       await refresh()
@@ -164,7 +165,7 @@ export function useAgent(): AgentState {
     setError(null)
     try {
       const hash = await walletClient.writeContract({
-        address: CONTRACT_ADDRESS, abi: ABI, functionName: 'withdrawRewards', gasPrice: parseGwei('250'),
+        address: CONTRACT_ADDRESS, abi: ABI, functionName: 'withdrawRewards', gasPrice: parseGwei('52'),
       })
       await publicClient.waitForTransactionReceipt({ hash })
       await refresh()

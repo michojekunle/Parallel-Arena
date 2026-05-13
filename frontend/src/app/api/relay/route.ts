@@ -56,8 +56,11 @@ interface RelayBody {
 }
 
 export async function POST(request: Request): Promise<Response> {
-  // Rate limit by IP
-  const ip = request.headers.get('x-forwarded-for')?.split(',')[0].trim() ?? 'unknown'
+  // Rate limit by IP — use the last entry in X-Forwarded-For (the most recently added by a
+  // trusted proxy) rather than the first (which is fully attacker-controlled in spoofing attacks).
+  const forwarded = request.headers.get('x-forwarded-for')
+  const ips = forwarded ? forwarded.split(',').map(s => s.trim()).filter(Boolean) : []
+  const ip = ips[ips.length - 1] ?? 'unknown'
   if (!checkRateLimit(ip)) {
     return Response.json({ error: 'Rate limit exceeded — try again in a minute' }, { status: 429 })
   }
@@ -66,9 +69,27 @@ export async function POST(request: Request): Promise<Response> {
     const body = await request.json() as RelayBody
     const { type, player, nonce, deadline, v, r, s } = body
 
+    // ── Input validation ──────────────────────────────────────────────────
     if (!player || !nonce || !deadline || v === undefined || !r || !s) {
       return Response.json({ error: 'Missing required fields' }, { status: 400 })
     }
+    // Ethereum address: 0x + 40 hex chars
+    if (!/^0x[0-9a-fA-F]{40}$/.test(player)) {
+      return Response.json({ error: 'Invalid player address' }, { status: 400 })
+    }
+    // v must be 27 or 28 (some libs normalise to 0/1 — accept both ranges)
+    if (typeof v !== 'number' || ![0, 1, 27, 28].includes(v)) {
+      return Response.json({ error: 'Invalid v value' }, { status: 400 })
+    }
+    // r and s must be 32-byte hex strings
+    if (!/^0x[0-9a-fA-F]{64}$/.test(r) || !/^0x[0-9a-fA-F]{64}$/.test(s)) {
+      return Response.json({ error: 'Invalid r or s value' }, { status: 400 })
+    }
+    // nonce and deadline must be non-negative integer strings parseable as BigInt
+    if (!/^\d+$/.test(nonce) || !/^\d+$/.test(deadline)) {
+      return Response.json({ error: 'Invalid nonce or deadline' }, { status: 400 })
+    }
+    // ─────────────────────────────────────────────────────────────────────
 
     const { walletClient, publicClient } = getClients()
     let hash: `0x${string}`
@@ -76,6 +97,10 @@ export async function POST(request: Request): Promise<Response> {
     if (type === 'action') {
       if (body.action === undefined || body.action === null) {
         return Response.json({ error: 'Missing action' }, { status: 400 })
+      }
+      // Action must be 1 (ATTACK), 2 (DEFEND), or 3 (HEAL) — 0 is NONE and invalid
+      if (!Number.isInteger(body.action) || body.action < 1 || body.action > 3) {
+        return Response.json({ error: 'Invalid action value' }, { status: 400 })
       }
       hash = await walletClient.writeContract({
         address: CONTRACT_ADDRESS,

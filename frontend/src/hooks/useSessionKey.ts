@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { createWalletClient, http, fallback, type Hex } from 'viem'
 import { privateKeyToAccount, generatePrivateKey } from 'viem/accounts'
 import { monadTestnet, RPC_URLS } from '@/lib/constants'
@@ -114,15 +114,24 @@ export function useSessionKey(userAddress: `0x${string}` | undefined): {
     return () => { cancelled = true }
   }, [userAddress])
 
-  const account = sessionKey ? privateKeyToAccount(sessionKey) : null
+  // Memoize account so privateKeyToAccount isn't called on every render
+  const account = useMemo(
+    () => (sessionKey ? privateKeyToAccount(sessionKey) : null),
+    [sessionKey],
+  )
 
-  const walletClient = account
-    ? createWalletClient({
-        account,
-        chain: monadTestnet,
-        transport: fallback(RPC_URLS.map(url => http(url, { timeout: 8_000 }))),
-      })
-    : null
+  // Memoize walletClient so a new object isn't created on every render —
+  // the stable reference prevents unnecessary useCallback invalidations upstream
+  const walletClient = useMemo(
+    () => account
+      ? createWalletClient({
+          account,
+          chain: monadTestnet,
+          transport: fallback(RPC_URLS.map(url => http(url, { timeout: 8_000 }))),
+        })
+      : null,
+    [account],
+  )
 
   return {
     sessionKey,
