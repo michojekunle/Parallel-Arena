@@ -94,8 +94,25 @@ export function ActionPanel({
     }
   }
 
+  // How long a round lasts — used to compute timer progress bar width.
+  // Contract default is 60s; we derive it from the first non-zero timeRemaining seen.
+  const ROUND_DURATION = 60
+
   return (
     <div className="border-b border-[#1a1a1a] bg-black">
+      {/* Round timer progress bar — depletes from full → empty */}
+      {isInArena && !roundResolved && isPhaseActive && timeRemaining > 0 && (
+        <div className="h-0.5 w-full bg-[#111] overflow-hidden">
+          <div
+            className="h-full transition-all duration-1000 ease-linear"
+            style={{
+              width: `${Math.min(100, (timeRemaining / ROUND_DURATION) * 100)}%`,
+              background: timeRemaining <= 10 ? '#EE0000' : timeRemaining <= 20 ? '#FDBA74' : '#26D962',
+            }}
+          />
+        </div>
+      )}
+
       {/* Tx status bar */}
       {txInfo && (
         <div

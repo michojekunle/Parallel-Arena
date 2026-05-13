@@ -46,6 +46,7 @@ export function Arena(): React.ReactElement {
     txStatus,
     txHash,
     attackTarget,
+    attackEvents,
     startVoteCount,
     quorum,
     hasVotedToStart,
@@ -60,31 +61,76 @@ export function Arena(): React.ReactElement {
   const { isConnected, address } = useWallet()
   const chainId = useChainId()
   const { switchChain } = useSwitchChain()
-  const isWrongChain = isConnected && chainId !== 10143
+  // Only flag wrong network once wagmi knows the chain — avoids flash on Privy auth
+  const isWrongChain = isConnected && !!chainId && chainId !== 10143
   const [showAgents, setShowAgents] = useState(false)
   const [isTourOpen, setIsTourOpen] = useState(false)
   const [dismissedModal, setDismissedModal] = useState(false)
   const [isAttackHovered, setIsAttackHovered] = useState(false)
 
-  // Visual effects triggered by my player's action
+  // Track which players were attacked this round so we can flash their cards
+  const [attackedAddrs, setAttackedAddrs] = useState<Set<string>>(new Set())
+  // Floating damage numbers: map address → {damage, key}
+  const [damageFloats, setDamageFloats] = useState<Array<{ addr: string; dmg: number; id: number }>>([])
+
+  // Reset dismissedModal when a new game starts (ENDED → WAITING/ACTIVE)
+  useEffect(() => {
+    if (!fullGameState) return
+    if (fullGameState.gamePhase !== GamePhase.ENDED) setDismissedModal(false)
+  }, [fullGameState?.gamePhase])
+
+  // Visual effects triggered by my player's action (with cleanup)
   const [activeAttack, setActiveAttack] = useState<{ attacker: string; target: string; damage: number } | null>(null)
   const [activeHeal, setActiveHeal] = useState<{ target: string; amount: number } | null>(null)
   const [activeDefend, setActiveDefend] = useState<{ target: string } | null>(null)
 
-  // Watch my player's action to trigger effects
   useEffect(() => {
     if (!address) return
+    let t: ReturnType<typeof setTimeout>
     if (myAction === Action.ATTACK) {
       setActiveAttack({ attacker: address, target: address, damage: 20 })
-      setTimeout(() => setActiveAttack(null), 1600)
+      t = setTimeout(() => setActiveAttack(null), 1600)
     } else if (myAction === Action.HEAL) {
       setActiveHeal({ target: address, amount: 15 })
-      setTimeout(() => setActiveHeal(null), 1400)
+      t = setTimeout(() => setActiveHeal(null), 1400)
     } else if (myAction === Action.DEFEND) {
       setActiveDefend({ target: address })
-      setTimeout(() => setActiveDefend(null), 1500)
+      t = setTimeout(() => setActiveDefend(null), 1500)
     }
+    return () => clearTimeout(t)
   }, [myAction, address])
+
+  // Wire round attack events → per-player flash + floating damage numbers.
+  // Uses full lowercase addresses from the contract event — NOT parsed from the battle log
+  // (the log uses SHORT_ADDR format which can't be reverse-looked-up against full addresses).
+  useEffect(() => {
+    if (attackEvents.length === 0) return
+    const hitSet = new Set(attackEvents.map(e => e.target))
+    setAttackedAddrs(hitSet)
+    // Aggregate total damage per target so multiple hits show the sum
+    const dmgByTarget = new Map<string, number>()
+    attackEvents.forEach(e => dmgByTarget.set(e.target, (dmgByTarget.get(e.target) ?? 0) + e.damage))
+    setDamageFloats(
+      Array.from(dmgByTarget.entries()).map(([addr, dmg], i) => ({ addr, dmg, id: Date.now() + i }))
+    )
+    const t1 = setTimeout(() => setAttackedAddrs(new Set()), 700)
+    const t2 = setTimeout(() => setDamageFloats([]), 1800)
+    return () => { clearTimeout(t1); clearTimeout(t2) }
+  }, [attackEvents])
+
+  // Keyboard shortcuts: 1=Attack, 2=Defend, 3=Heal
+  useEffect(() => {
+    const canAct = isInArena && !hasActed && !(gameState?.resolved) && fullGameState?.gamePhase === GamePhase.ACTIVE
+    const handleKey = (e: KeyboardEvent) => {
+      if (!canAct || e.metaKey || e.ctrlKey || e.altKey) return
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
+      if (e.key === '1') submitAction(Action.ATTACK)
+      else if (e.key === '2') submitAction(Action.DEFEND)
+      else if (e.key === '3') submitAction(Action.HEAL)
+    }
+    window.addEventListener('keydown', handleKey)
+    return () => window.removeEventListener('keydown', handleKey)
+  }, [isInArena, hasActed, gameState?.resolved, fullGameState?.gamePhase, submitAction])
 
   const activePlayers = useMemo(() => players.filter(p => p.status === PlayerStatus.ACTIVE), [players])
   const deadPlayers = useMemo(() => players.filter(p => p.status === PlayerStatus.DEAD), [players])
@@ -406,19 +452,29 @@ export function Arena(): React.ReactElement {
 
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-2 lg:gap-3">
               {activePlayers.map(player => {
-                // Show attack target ring when player hovers ATTACK button
-                const isPreviewTarget = isAttackHovered
-                  && attackTarget?.toLowerCase() === player.addr.toLowerCase()
-                const isWeakest = !isAttackHovered
-                  && player.addr.toLowerCase() === attackTarget?.toLowerCase()
+                const addrLower = player.addr.toLowerCase()
+                const isPreviewTarget = isAttackHovered && attackTarget?.toLowerCase() === addrLower
+                const isWeakest = !isAttackHovered && addrLower === attackTarget?.toLowerCase()
+                const dmgFloat = damageFloats.find(f => f.addr === addrLower)
                 return (
-                  <PlayerAvatar
-                    key={player.addr}
-                    player={player}
-                    currentAction={actionMap.get(player.addr.toLowerCase())}
-                    isMe={myPlayer?.addr.toLowerCase() === player.addr.toLowerCase()}
-                    isTarget={isPreviewTarget || isWeakest}
-                  />
+                  <div key={player.addr} className="relative">
+                    <PlayerAvatar
+                      player={player}
+                      currentAction={actionMap.get(addrLower)}
+                      isMe={myPlayer?.addr.toLowerCase() === addrLower}
+                      isTarget={isPreviewTarget || isWeakest}
+                      isUnderAttack={attackedAddrs.has(addrLower)}
+                    />
+                    {/* Floating damage number */}
+                    {dmgFloat && (
+                      <div
+                        key={dmgFloat.id}
+                        className="absolute top-1 right-1 z-20 font-black text-[#EE0000] text-sm pointer-events-none animate-float-up"
+                      >
+                        -{dmgFloat.dmg}
+                      </div>
+                    )}
+                  </div>
                 )
               })}
             </div>

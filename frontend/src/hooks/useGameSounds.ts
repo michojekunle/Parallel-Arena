@@ -2,25 +2,49 @@
 
 import { useCallback, useRef } from 'react'
 
+type AudioContextWithWebkit = Window & { webkitAudioContext?: typeof AudioContext }
+
 export function useGameSounds() {
   const audioContextRef = useRef<AudioContext | null>(null)
 
   const playSynthetic = useCallback((type: string) => {
     if (typeof window === 'undefined') return
-    
+
     if (!audioContextRef.current) {
-      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)()
+      const Ctx = window.AudioContext ?? (window as AudioContextWithWebkit).webkitAudioContext
+      if (!Ctx) return
+      audioContextRef.current = new Ctx()
     }
-    
+
     const ctx = audioContextRef.current
     if (ctx.state === 'suspended') ctx.resume()
+
+    const now = ctx.currentTime
+
+    // VICTORY uses multiple oscillators — handle separately before allocating the default osc
+    if (type === 'VICTORY') {
+      // Triumphant ascending triad: C4 → E4 → G4 staggered over 0.6s
+      const freqs = [261.63, 329.63, 392]
+      freqs.forEach((freq, i) => {
+        const vo = ctx.createOscillator()
+        const vg = ctx.createGain()
+        vo.connect(vg)
+        vg.connect(ctx.destination)
+        vo.type = 'triangle'
+        vo.frequency.setValueAtTime(freq, now + i * 0.15)
+        vg.gain.setValueAtTime(0, now + i * 0.15)
+        vg.gain.linearRampToValueAtTime(0.15, now + i * 0.15 + 0.05)
+        vg.gain.linearRampToValueAtTime(0, now + i * 0.15 + 0.5)
+        vo.start(now + i * 0.15)
+        vo.stop(now + i * 0.15 + 0.55)
+      })
+      return
+    }
 
     const osc = ctx.createOscillator()
     const gn = ctx.createGain()
     osc.connect(gn)
     gn.connect(ctx.destination)
-
-    const now = ctx.currentTime
 
     switch (type) {
       case 'ATTACK':
@@ -67,6 +91,10 @@ export function useGameSounds() {
         osc.start(now)
         osc.stop(now + 0.4)
         break
+      default:
+        // Unknown type — disconnect to avoid AudioContext node leak
+        osc.disconnect()
+        return
     }
   }, [])
 

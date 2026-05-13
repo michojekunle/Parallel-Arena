@@ -30,7 +30,10 @@ export function BackgroundMusic() {
   const initAudioContext = useCallback(() => {
     if (audioNodesRef.current) return audioNodesRef.current
 
-    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)()
+    type AudioCtxWindow = Window & { webkitAudioContext?: typeof AudioContext }
+    const AudioCtx = window.AudioContext ?? (window as AudioCtxWindow).webkitAudioContext
+    if (!AudioCtx) return audioNodesRef.current ?? (() => { throw new Error('AudioContext unavailable') })()
+    const ctx = new AudioCtx()
     if (ctx.state === 'suspended') ctx.resume()
 
     const masterGain = ctx.createGain()
@@ -272,15 +275,13 @@ export function BackgroundMusic() {
     intensityTimerRef.current = setTimeout(() => setIntensity(0), 3000)
   }, [intensity])
 
-  // Trigger intensity boost on action
+  // Trigger intensity boost on action keys
   useEffect(() => {
-    const boostIntensity = () => {
-      setIntensity(1)
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (['1', '2', '3', 'Enter'].includes(e.key)) setIntensity(1)
     }
-    window.addEventListener('keydown', (e) => {
-      if (['1', '2', '3', 'Enter'].includes(e.key)) boostIntensity()
-    })
-    return () => window.removeEventListener('keydown', boostIntensity as any)
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
   }, [])
 
   // Master mute/unmute

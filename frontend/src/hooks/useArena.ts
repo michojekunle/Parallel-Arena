@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { createPublicClient, http, fallback, parseGwei, parseEther } from 'viem'
+import { createPublicClient, http, fallback, parseGwei, parseEther, type WalletClient, type Account, type Transport, type Chain } from 'viem'
 import { useWalletClient, useAccount, useSignTypedData } from 'wagmi'
 import { ABI, CONTRACT_ADDRESS } from '@/lib/contract'
 import { monadTestnet, RPC_URLS, POLL_INTERVAL, SHORT_ADDR, ACTION_LABELS } from '@/lib/constants'
@@ -79,7 +79,8 @@ async function relay(body: Record<string, unknown>): Promise<`0x${string}`> {
   })
   const data = await res.json() as { txHash?: `0x${string}`; error?: string }
   if (!res.ok || data.error) throw new Error(data.error || 'Relay failed')
-  return data.txHash!
+  if (!data.txHash) throw new Error('Relay returned no txHash')
+  return data.txHash
 }
 
 function loadPersistedLog(): LogEntry[] {
@@ -112,6 +113,9 @@ export function useArena() {
   const [lastRoundNum, setLastRoundNum] = useState<number>(0)
   const [resolvedTxHashes, setResolvedTxHashes] = useState<`0x${string}`[]>([])
 
+  // Per-round attack events — full addresses, populated from on-chain events
+  const [attackEvents, setAttackEvents] = useState<Array<{ attacker: string; target: string; damage: number }>>([])
+
   // Quorum / start voting
   const [startVoteCount, setStartVoteCount] = useState<number>(0)
   const [quorum, setQuorum] = useState<number>(0)
@@ -121,6 +125,17 @@ export function useArena() {
   const [txStatus, setTxStatus] = useState<TxStatus>('idle')
   const [txHash, setTxHash] = useState<`0x${string}` | null>(null)
   const txStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Cleanup all timers on unmount to prevent state updates on a dead component
+  useEffect(() => {
+    return () => {
+      if (txStatusTimerRef.current) clearTimeout(txStatusTimerRef.current)
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+      if (flashTimerRef.current) clearTimeout(flashTimerRef.current)
+    }
+  }, [])
 
   const setTxDone = useCallback((status: 'confirmed' | 'failed') => {
     setTxStatus(status)
@@ -168,7 +183,8 @@ export function useArena() {
 
   const showToast = useCallback((message: string, type: 'success' | 'error') => {
     setToast({ message, type })
-    setTimeout(() => setToast(null), 4000)
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+    toastTimerRef.current = setTimeout(() => setToast(null), 4000)
   }, [])
 
   const fetchState = useCallback(async () => {
@@ -215,6 +231,8 @@ export function useArena() {
 
       if (round !== lastRoundRef.current && lastRoundRef.current !== -1n) {
         const prevRound = lastRoundRef.current
+        // Clear previous round's attack events before populating from new round's events
+        setAttackEvents([])
         try {
           const result = await publicClient.readContract({
             address: CONTRACT_ADDRESS, abi: ABI, functionName: 'getRoundResult', args: [prevRound],
@@ -222,7 +240,8 @@ export function useArena() {
           setLastResult(result)
           setIsFlashing(true)
           setRoundStartMs(prev => { if (prev !== null) setLastRoundMs(Date.now() - prev); return null })
-          setTimeout(() => setIsFlashing(false), 1000)
+          if (flashTimerRef.current) clearTimeout(flashTimerRef.current)
+          flashTimerRef.current = setTimeout(() => setIsFlashing(false), 1000)
           // Snapshot hashes of actions that resolved this round for the visualizer
           setPendingActions(prev => {
             setResolvedTxHashes(prev.flatMap(p => p.txHash ? [p.txHash as `0x${string}`] : []))
@@ -281,6 +300,12 @@ export function useArena() {
         logs.forEach((log: unknown) => {
           const t = log as { args: { attacker: `0x${string}`; target: `0x${string}`; damage: bigint } }
           addLog({ round: Number(lastRoundRef.current), message: `${SHORT_ADDR(t.args.attacker)} → ${SHORT_ADDR(t.args.target)} ${t.args.damage} DMG`, type: 'attack' })
+          // Store full lowercase addresses so UI can correctly flash/float damage on player cards
+          setAttackEvents(prev => [...prev, {
+            attacker: t.args.attacker.toLowerCase(),
+            target: t.args.target.toLowerCase(),
+            damage: Number(t.args.damage),
+          }])
         })
       },
     })
@@ -428,8 +453,9 @@ export function useArena() {
           hash = await relay({ type: 'action', player: address, action, nonce: nonce.toString(), deadline: deadline.toString(), v, r, s })
         } else {
           // Sign silently with session key (local private key — no MetaMask popup).
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const signature = await (sessionWallet as any).signTypedData({
+          // Cast to WalletClient with a bound Account so signTypedData doesn't require
+          // an `account` argument (the client was created with one already embedded).
+          const signature = await (sessionWallet as WalletClient<Transport, Chain, Account>).signTypedData({
             domain: EIP712_DOMAIN, types: ACTION_PERMIT_TYPES, primaryType: 'ActionPermit',
             message: { player: address, action, round: BigInt(round), nonce, deadline },
           }) as `0x${string}`
@@ -535,7 +561,7 @@ export function useArena() {
     if (!walletClient) { showToast('Connect wallet first', 'error'); return }
     try {
       const hash = await walletClient.writeContract({
-        address: CONTRACT_ADDRESS, abi: ABI, functionName: 'resetGame', gasPrice: parseGwei('250'),
+        address: CONTRACT_ADDRESS, abi: ABI, functionName: 'resetGame', gasPrice: parseGwei('52'),
       })
       showToast('Resetting game...', 'success')
       await publicClient.waitForTransactionReceipt({ hash })
@@ -560,7 +586,9 @@ export function useArena() {
   const isInArena = myPlayer?.status === PlayerStatus.ACTIVE
   const isEliminated = myPlayer?.status === PlayerStatus.DEAD
   const hasActed = myAction !== Action.NONE
+  // Don't offer join during ENDED phase — the game is over until reset
   const showJoinButton = !isInArena && !isEliminated && joinStep === 'idle'
+    && fullGameState?.gamePhase !== GamePhase.ENDED
 
   // Compute attack target client-side (lowest HP active non-self player)
   const attackTarget = players
@@ -591,6 +619,7 @@ export function useArena() {
     txStatus,
     txHash,
     attackTarget,
+    attackEvents,
     startVoteCount,
     quorum,
     hasVotedToStart,

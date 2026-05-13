@@ -41,7 +41,7 @@ export function EndGameModal({
   onClaim,
   onReset,
   hasClaimed,
-}: EndGameModalProps): React.ReactElement | null {
+}: EndGameModalProps): React.ReactElement {
   const [showReplay, setShowReplay] = useState(false)
   const [gameEndBlock, setGameEndBlock] = useState<bigint | null>(null)
 
@@ -70,8 +70,6 @@ export function EndGameModal({
 
   const { frames, loading: replayLoading } = useGameReplay(showReplay ? gameEndBlock : null, players)
 
-  if (!isOpen) return null
-
   const prizeByRank = prizeAmounts
     ? [prizeAmounts.firstPrize, prizeAmounts.secondPrize, prizeAmounts.thirdPrize]
     : [0n, 0n, 0n]
@@ -79,9 +77,13 @@ export function EndGameModal({
   const myWinnerRank = winners.findIndex(w => w.toLowerCase() === myAddress?.toLowerCase())
   const isWinner = myWinnerRank >= 0
 
+  // AnimatePresence MUST wrap the conditional, not be inside it.
+  // Returning null before reaching AnimatePresence kills the exit animation entirely.
   return (
     <AnimatePresence>
+      {isOpen && (
       <motion.div
+        key="end-game-backdrop"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
@@ -91,6 +93,7 @@ export function EndGameModal({
         <motion.div
           initial={{ scale: 0.8, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
+          exit={{ scale: 0.9, opacity: 0 }}
           transition={{ type: 'spring', damping: 20 }}
           className="w-full max-w-lg border border-[#1a1a1a] bg-black p-6 relative my-4"
         >
@@ -204,6 +207,7 @@ export function EndGameModal({
           </div>
         </motion.div>
       </motion.div>
+      )}
     </AnimatePresence>
   )
 }
