@@ -88,7 +88,7 @@ export function Arena(): React.ReactElement {
     if (!address) return
     let t: ReturnType<typeof setTimeout>
     if (myAction === Action.ATTACK) {
-      setActiveAttack({ attacker: address, target: address, damage: 20 })
+      setActiveAttack({ attacker: address, target: attackTarget ?? address, damage: 20 })
       t = setTimeout(() => setActiveAttack(null), 1600)
     } else if (myAction === Action.HEAL) {
       setActiveHeal({ target: address, amount: 15 })

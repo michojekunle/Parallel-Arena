@@ -546,11 +546,11 @@ export function useArena() {
       const { v, r, s } = splitSig(signature)
       showToast('Claiming prize (gasless)...', 'success')
 
-      const txHash = await relay({ type: 'claim', player: address, nonce: nonce.toString(), deadline: deadline.toString(), v, r, s })
+      const claimTxHash = await relay({ type: 'claim', player: address, nonce: nonce.toString(), deadline: deadline.toString(), v, r, s })
 
       setHasClaimed(true)
       showToast('Prize claimed!', 'success')
-      addLog({ round: Number(gameState?.round ?? 0), message: 'Prize claimed!', type: 'system', txHash })
+      addLog({ round: Number(gameState?.round ?? 0), message: 'Prize claimed!', type: 'system', txHash: claimTxHash })
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Unknown error'
       showToast(`Claim failed: ${msg.slice(0, 60)}`, 'error')

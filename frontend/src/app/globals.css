@@ -42,7 +42,7 @@
   --accent-secondary: #888888;
   --accent-blue: #0070F3;
   --accent-red: #EE0000;
-  --accent-green: #0070F3; /* Vercel uses blue for success sometimes, or clean green #00DFD8 */
+  --accent-green: #26D962;
   --border-subtle: #333333;
   --text-primary: #FFFFFF;
   --text-muted: #888888;
@@ -119,10 +119,7 @@ body {
 }
 .health-segment.low { background: #EE0000; }
 
-@keyframes scanline {
-  0% { transform: translateY(-100%); }
-  100% { transform: translateY(100%); }
-}
+/* Note: @keyframes scanline is defined above (lines 18-21) for the sweep effect */
 /* Subdued activity line */
 .activity-indicator {
   position: relative;

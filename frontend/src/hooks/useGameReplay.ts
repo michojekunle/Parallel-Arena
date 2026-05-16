@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { createPublicClient, http, fallback } from 'viem'
 import { monadTestnet, RPC_URLS } from '@/lib/constants'
 import { ABI, CONTRACT_ADDRESS } from '@/lib/contract'
@@ -28,8 +28,16 @@ export function useGameReplay(
   const [frames, setFrames] = useState<ReplayFrame[]>([])
   const [loading, setLoading] = useState(false)
 
+  // Stable reference for players — prevents re-running the effect when the
+  // parent passes a new array object with the same contents on every render.
+  const playersRef = useRef(initialPlayers)
+  useEffect(() => { playersRef.current = initialPlayers }, [initialPlayers])
+
+  // Derive a stable string key from player addresses for the dependency array
+  const playerKey = initialPlayers.map(p => p.addr).join(',')
+
   useEffect(() => {
-    if (!gameEndBlock || initialPlayers.length === 0) return
+    if (!gameEndBlock || playersRef.current.length === 0) return
     if (!CONTRACT_ADDRESS || CONTRACT_ADDRESS === '0x0000000000000000000000000000000000000000') return
 
     let cancelled = false
@@ -49,7 +57,7 @@ export function useGameReplay(
 
         // Build initial health map from Player[] prop
         const healthMap: Record<`0x${string}`, number> = {}
-        for (const p of initialPlayers) {
+        for (const p of playersRef.current) {
           // If game ended, use final health (DEAD = 0)
           // We need to reconstruct per-round — start from known starting health
           healthMap[p.addr.toLowerCase() as `0x${string}`] = 100
@@ -135,7 +143,7 @@ export function useGameReplay(
       .finally(() => { if (!cancelled) setLoading(false) })
 
     return () => { cancelled = true }
-  }, [gameEndBlock, initialPlayers])
+  }, [gameEndBlock, playerKey])
 
   return { frames, loading }
 }
