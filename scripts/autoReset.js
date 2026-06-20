@@ -24,6 +24,7 @@ if (!RESET_KEY || !CONTRACT_ADDRESS) {
 // RPC Fallback for resilience
 const RPC_URLS = [
   process.env.MONAD_RPC_URL || 'https://testnet-rpc.monad.xyz',
+  'https://monad-testnet.drpc.org',
 ].filter(Boolean)
 
 const transport = fallback(RPC_URLS.map(url => http(url, { timeout: 10_000 })))

@@ -25,7 +25,7 @@ const RPC_URLS = [
   process.env.MONAD_RPC_URL || 'https://testnet-rpc.monad.xyz',
   'https://monad-testnet.drpc.org',
 ].filter(Boolean)
-const RPC_URL = RPC_URLS[0]
+const RPC_TRANSPORT = fallback(RPC_URLS.map(url => http(url, { timeout: 10_000 })))
 const NUM_AGENTS       = parseInt(process.env.NUM_AGENTS || '10')
 
 if (!CONTRACT_ADDRESS) { console.error('ERROR: CONTRACT_ADDRESS not set'); process.exit(1) }
@@ -77,7 +77,7 @@ function buildActionPermitDigest(domainSeparator, player, action, round, nonce, 
   // Use viem's hashTypedData equivalent
   return {
     domain: {
-      name: 'ParallelArena',
+      name: 'ParallelArenaV2',
       version: '1',
       chainId: monadTestnet.id,
       verifyingContract: CONTRACT_ADDRESS,
@@ -203,7 +203,7 @@ class Agent {
     const agentWalletClient = createWalletClient({
       account: this.account,
       chain: monadTestnet,
-      transport: http(RPC_URL),
+      transport: RPC_TRANSPORT,
     })
 
     const typedData = buildActionPermitDigest(null, this.address, action, round, nonce, deadline)
@@ -248,9 +248,9 @@ function buildRelayerClient() {
   const walletClient   = createWalletClient({
     account: relayerAccount,
     chain: monadTestnet,
-    transport: http(RPC_URL),
+    transport: RPC_TRANSPORT,
   })
-  const publicClient = createPublicClient({ chain: monadTestnet, transport: http(RPC_URL) })
+  const publicClient = createPublicClient({ chain: monadTestnet, transport: RPC_TRANSPORT })
   console.log(`🔑 Relayer: ${relayerAccount.address}`)
   return { relayerAccount, walletClient, publicClient }
 }
@@ -324,7 +324,7 @@ async function joinPhase(agents, walletClient, publicClient) {
       } else {
         // Unregistered: agent sends joinArena directly from its own wallet
         const agentWalletClient = createWalletClient({
-          account: agent.account, chain: monadTestnet, transport: http(RPC_URL),
+          account: agent.account, chain: monadTestnet, transport: RPC_TRANSPORT,
         })
         hash = await agentWalletClient.writeContract({
           address: CONTRACT_ADDRESS, abi: ABI, functionName: 'joinArena',

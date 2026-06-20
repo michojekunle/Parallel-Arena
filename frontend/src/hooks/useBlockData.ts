@@ -1,12 +1,12 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { createPublicClient, http } from 'viem'
-import { monadTestnet } from '@/lib/constants'
+import { createPublicClient, http, fallback } from 'viem'
+import { monadTestnet, RPC_URLS } from '@/lib/constants'
 
 const publicClient = createPublicClient({
   chain: monadTestnet,
-  transport: http(process.env.NEXT_PUBLIC_RPC_URL || 'https://testnet-rpc.monad.xyz'),
+  transport: fallback(RPC_URLS.map(url => http(url, { timeout: 10_000 }))),
 })
 
 export interface BlockData {
